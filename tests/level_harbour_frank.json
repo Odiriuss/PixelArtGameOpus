@@ -1,0 +1,15 @@
+[{"url": "?mute=1&start=chase"},
+ {"wait": 1200},
+ {"eval": "(()=>{const t=window.__test; const V=t.VEH.find(v=>v.parked&&v.model==='coupe'); t.FRANK.x=V.x; t.FRANK.y=V.y; enterVehicle(V); V.x=60; V.y=88; V.a=Math.PI/2; V.vx=0; V.vy=4; t.MISSION.sedan.ai.band=0; return V.name})()", "label": "slow"},
+ {"wait": 1500},
+ {"eval": "JSON.stringify({car: window.__test.state().car, sink: window.__test.PLAYER.car.sinking})", "label": "slow result (should hold)"},
+ {"shot": "t12_kerb.png"},
+ {"eval": "(()=>{const V=window.__test.PLAYER.car; V.x=60; V.y=87; V.a=Math.PI/2; V.vx=0; V.vy=10; return 1})()"},
+ {"wait": 600},
+ {"shot": "t12_over.png"},
+ {"wait": 1400},
+ {"shot": "t12_under.png"},
+ {"eval": "JSON.stringify({s: window.__test.state(), inCar: !!window.__test.PLAYER.car, alive: window.__test.FRANK.alive, line: window.__test.MISSION.lines.map(l=>l.text)})", "label": "after dive"},
+ {"wait": 1500},
+ {"shot": "t12_climb.png"}
+]

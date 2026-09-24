@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ravenshore Garden, 1957</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+  canvas#screen { display: block; position: fixed; left: 0; top: 0; width: 100vw; height: 100vh;
+                  image-rendering: crisp-edges; image-rendering: pixelated; background: #000; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+/*
+ * RAVENSHORE, 1957 - "The Garden at Dusk"
+ * A looping pixel-art cutscene. Vanilla JS + Canvas 2D, no external assets.
+ *
+ * ============================== PLAN ==============================
+ * Framebuffer: 320x180 Uint8Array of palette indices (+ a parallel layer-id buffer used as
+ *   a light mask). Letterbox rows 0-22 and 157-179; image area 320x134. Converted once per
+ *   frame through a Uint32Array palette into ImageData, blitted at the largest integer scale.
+ *   All soft falloff = ordered 4x4 Bayer dither; all lighting = palette-index remaps.
+ *
+ * LAYERS (back to front, parallax factor applied to camera x and y):
+ *   1 sky 0.05 ........ dithered dusk gradient, sun glow, stars, 3 cloud banks, searchlights
+ *   2 far 0.15 ........ art-deco skyline (two depths), windows, beacons, traffic lanes,
+ *                       bay water, sun reflection column, ship lights, harbor fog
+ *   3 mid 0.25 ........ fusion headland (dome, 2 cooling towers, steam, cyan core), bridge
+ *   4 hill 0.50 ....... hillside, cypress + pine (1px sway), terraces, diner + atom neon
+ *   5 garden 1.00 ..... cottage (blinds, porthole, globe lamp, antenna), wall + railing,
+ *                       flagstone path, 3 steel beds, cloches, standpipe, 2 lamps,
+ *                       robot, woman, water particles, shadows, slats, lamp pools
+ *   6 aircar 0.70 ..... hero aircar during the final SETTLE (headlight cone, underglow)
+ *   7 foreground 1.40 . grass, gate finial, branch, telephone crossbar + wires (near-black)
+ *   post .............. vignette (dithered SHD remap), film grain (12 fps), letterbox
+ *
+ * PALETTE (53 colours, see PAL below). Light ramps (dark -> lit):
+ *   black 0-1 | sky 2-3-4-5-6-7-8 | bay 11-12 | city 13-14 | foliage 18-19-20-21-35
+ *   stone 22-23-24 | soil wet->dry 27-26-25 | steel 28-29-30-31 | stucco 40-39-38-37
+ *   dress 48-47-32-33 | skin 43-42-41 | hair 44-45 | cream 46-37 | water 51-50-49
+ *   Remaps: LIT (warm lamp/slat light), SHD (cool shadow), BEAM (searchlight haze),
+ *   UPG (aircar underglow on highlights), GRN (film grain on the darkest ramps).
+ *
+ * TIMELINE (loop = 54 s = 3240 ticks @ 60 Hz). Woman walks at ~20 px/s; beds A/B/C sit on
+ * the path just upstage of her lane; she overshoots each bed, turns back and pours over it.
+ *   0.0  IDLE   at cottage step x=86 (turns right at 1.5)   camera: establishing dolly 160 -> 116
+ *   5.0  WALK   86 -> 158                                   camera eases down + across, reveals cottage
+ *   8.6  LIFT   turn left to bed A (roses), raise can
+ *   9.6  POUR   3.6 s sweep across the bed                  camera: rule-of-thirds push, y 12
+ *  13.2  SETTLE lower, pause, gaze up at the city, turn right
+ *  16.2  WALK -> 230 | 19.7 LIFT | 20.7 POUR (marigolds) | 24.3 SETTLE
+ *  27.3  WALK -> 300 | 30.8 LIFT | 31.8 POUR (lavender + daisies) | 35.4 final SETTLE (7 s):
+ *        robot happy bounce 36.1, she turns to the view 36.4, hero aircar glides past 36.6-42.2
+ *  42.4  WALK   300 -> 86 home                              camera follows, then eases back
+ *  53.0  IDLE   at the step                                 to the establishing framing at the loop
+ *
+ * CAMERA: target path built from keyframes (fixed framings + "follow with lead room"),
+ *   blended with smootherstep, then circularly smoothed (3x box blur) over the loop so every move
+ *   eases in/out and the path closes seamlessly; quantised to whole pixels. World ~480x150,
+ *   camera x 0..160, y 0..16 (y applies the same parallax factors).
+ *
+ * PARTICLES: one preallocated pool of 300 (typed arrays + free list). Water drops (~25 live at
+ *   60/s), splashes (2-3 per landing, ~40 live), walk drips; 42 permanent ambient slots driven by
+ *   loop phase: 24 steam wisps, 8 moths, 10 fireflies. Peak use ~110 of 300.
+ *   Every ambient cycle is a whole number of periods per loop, so the last frame flows into the first.
+ *
+ * Optional URL parameters: ?t=SECONDS starts at that loop time (simulated from 0), &freeze=1 holds
+ * the frame, ?stats=1 writes the mean/max frame cost into the page title.
+ * ===================================================================
+ */

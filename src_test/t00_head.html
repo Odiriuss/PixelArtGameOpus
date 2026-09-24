@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Black Sedan - Test Level</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+  canvas#screen { display: block; position: fixed; left: 0; top: 0; width: 100vw; height: 100vh;
+                  image-rendering: crisp-edges; image-rendering: pixelated; background: #000; cursor: none;
+                  touch-action: none; outline: none; }
+</style>
+</head>
+<body>
+<canvas id="screen" tabindex="0"></canvas>
+<script>
+/*
+ * THE HOURGLASS CITY - TEST LEVEL: THE BLACK SEDAN
+ * Driving and gunplay on the Hourglass City engine. New Meridian, 1957, a quarter to midnight, rain.
+ * Vanilla JS + Canvas 2D. No external assets, fonts, libraries or network requests.
+ *
+ * ============================== PLAN ==============================
+ * CITY    Six blocks, four avenues, three streets, the harbour and Pier 9. Every surface is recorded in two
+ *         display lists (UNDER: ground, kerbs, low props, the bottom 1.2 m of buildings; OVER: the rest) and
+ *         baked lazily into 64 px screen tiles with the room light model. Each frame the visible tiles are
+ *         composed and the OVER layer in front of Frank is cut away, so the street you are on stays visible.
+ * CARS    Voxel models pre-rendered at 64 headings (per-pixel depth, paint ramps, working lights).
+ *         Arcade rigid-body physics: grip, handbrake slides, impulse collisions with spin, damage, fire.
+ *         Any parked car can be taken. AI drivers follow lanes by pure pursuit; traffic, a streetcar.
+ * GUNS    Hitscan with spread, 3D cover (crouch behind anything lower than your head), reloads.
+ *         Goons pick cover that hides them from Frank, pop up to shoot, flank, and retreat when hurt.
+ * LEVEL   Intro at the Blue Comet -> the chase (ram it, shoot it, don't lose it) -> the fight where the
+ *         sedan stops -> what the leader had in his pocket.
+ *
+ * PLAY    On foot: WASD move, mouse aim, left click shoot, right click / C crouch, R reload, E car.
+ *         Driving: W/S gas and brake, A/D steer, Space handbrake, E get out, left click shoot out the window,
+ *         H horn. F fires at the nearest enemy (keyboard play). Esc: pause.
+ * URL     ?mute=1 silent, ?start=chase|fight skips ahead, ?debug=1 draws collision and AI, ?god=1,
+ *         ?turbo=N runs the simulation faster, ?auto=1 lets the test driver play.
+ * ===================================================================
+ */

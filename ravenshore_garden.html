@@ -1,0 +1,2106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ravenshore Garden, 1957</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+  canvas#screen { display: block; position: fixed; left: 0; top: 0; width: 100vw; height: 100vh;
+                  image-rendering: crisp-edges; image-rendering: pixelated; background: #000; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+/*
+ * RAVENSHORE, 1957 - "The Garden at Dusk"
+ * A looping pixel-art cutscene. Vanilla JS + Canvas 2D, no external assets.
+ *
+ * ============================== PLAN ==============================
+ * Framebuffer: 320x180 Uint8Array of palette indices (+ a parallel layer-id buffer used as
+ *   a light mask). Letterbox rows 0-22 and 157-179; image area 320x134. Converted once per
+ *   frame through a Uint32Array palette into ImageData, blitted at the largest integer scale.
+ *   All soft falloff = ordered 4x4 Bayer dither; all lighting = palette-index remaps.
+ *
+ * LAYERS (back to front, parallax factor applied to camera x and y):
+ *   1 sky 0.05 ........ dithered dusk gradient, sun glow, stars, 3 cloud banks, searchlights
+ *   2 far 0.15 ........ art-deco skyline (two depths), windows, beacons, traffic lanes,
+ *                       bay water, sun reflection column, ship lights, harbor fog
+ *   3 mid 0.25 ........ fusion headland (dome, 2 cooling towers, steam, cyan core), bridge
+ *   4 hill 0.50 ....... hillside, cypress + pine (1px sway), terraces, diner + atom neon
+ *   5 garden 1.00 ..... cottage (blinds, porthole, globe lamp, antenna), wall + railing,
+ *                       flagstone path, 3 steel beds, cloches, standpipe, 2 lamps,
+ *                       robot, woman, water particles, shadows, slats, lamp pools
+ *   6 aircar 0.70 ..... hero aircar during the final SETTLE (headlight cone, underglow)
+ *   7 foreground 1.40 . grass, gate finial, branch, telephone crossbar + wires (near-black)
+ *   post .............. vignette (dithered SHD remap), film grain (12 fps), letterbox
+ *
+ * PALETTE (53 colours, see PAL below). Light ramps (dark -> lit):
+ *   black 0-1 | sky 2-3-4-5-6-7-8 | bay 11-12 | city 13-14 | foliage 18-19-20-21-35
+ *   stone 22-23-24 | soil wet->dry 27-26-25 | steel 28-29-30-31 | stucco 40-39-38-37
+ *   dress 48-47-32-33 | skin 43-42-41 | hair 44-45 | cream 46-37 | water 51-50-49
+ *   Remaps: LIT (warm lamp/slat light), SHD (cool shadow), BEAM (searchlight haze),
+ *   UPG (aircar underglow on highlights), GRN (film grain on the darkest ramps).
+ *
+ * TIMELINE (loop = 54 s = 3240 ticks @ 60 Hz). Woman walks at ~20 px/s; beds A/B/C sit on
+ * the path just upstage of her lane; she overshoots each bed, turns back and pours over it.
+ *   0.0  IDLE   at cottage step x=86 (turns right at 1.5)   camera: establishing dolly 160 -> 116
+ *   5.0  WALK   86 -> 158                                   camera eases down + across, reveals cottage
+ *   8.6  LIFT   turn left to bed A (roses), raise can
+ *   9.6  POUR   3.6 s sweep across the bed                  camera: rule-of-thirds push, y 12
+ *  13.2  SETTLE lower, pause, gaze up at the city, turn right
+ *  16.2  WALK -> 230 | 19.7 LIFT | 20.7 POUR (marigolds) | 24.3 SETTLE
+ *  27.3  WALK -> 300 | 30.8 LIFT | 31.8 POUR (lavender + daisies) | 35.4 final SETTLE (7 s):
+ *        robot happy bounce 36.1, she turns to the view 36.4, hero aircar glides past 36.6-42.2
+ *  42.4  WALK   300 -> 86 home                              camera follows, then eases back
+ *  53.0  IDLE   at the step                                 to the establishing framing at the loop
+ *
+ * CAMERA: target path built from keyframes (fixed framings + "follow with lead room"),
+ *   blended with smootherstep, then circularly smoothed (3x box blur) over the loop so every move
+ *   eases in/out and the path closes seamlessly; quantised to whole pixels. World ~480x150,
+ *   camera x 0..160, y 0..16 (y applies the same parallax factors).
+ *
+ * PARTICLES: one preallocated pool of 300 (typed arrays + free list). Water drops (~25 live at
+ *   60/s), splashes (2-3 per landing, ~40 live), walk drips; 42 permanent ambient slots driven by
+ *   loop phase: 24 steam wisps, 8 moths, 10 fireflies. Peak use ~110 of 300.
+ *   Every ambient cycle is a whole number of periods per loop, so the last frame flows into the first.
+ *
+ * Optional URL parameters: ?t=SECONDS starts at that loop time (simulated from 0), &freeze=1 holds
+ * the frame, ?stats=1 writes the mean/max frame cost into the page title.
+ * ===================================================================
+ */
+'use strict';
+
+// ------------------------------------------------------------------ constants
+const W = 320, H = 180, BAR = 23, IH = 134, IY0 = BAR, IY1 = BAR + IH;
+const FPS = 60, DT = 1 / FPS;
+const LOOP_S = 54, LOOP_F = LOOP_S * FPS;          // 3240 ticks
+const CAM_MAX_X = 160, CAM_MAX_Y = 16;
+const TAU = Math.PI * 2;
+const T = 255;                                      // transparent index in sprite/layer buffers
+
+// ------------------------------------------------------------------ palette (53)
+const PAL_HEX = [
+  '07060a', '141119',                                   //  0 black, 1 ink
+  '1b1a2a', '2c3246', '4b4659', '86615f', 'c2744c',     //  2-6 sky zenith -> horizon
+  'f2b86e', 'fff0cf',                                   //  7 glow, 8 hot
+  '3a3446',                                             //  9 cloud body
+  'a7adb6',                                             // 10 searchlight haze
+  '121822', '273041',                                   // 11-12 bay
+  '25243a', '36354b',                                   // 13-14 distant skyline
+  'd9443a',                                             // 15 neon red / beacons
+  '5ad1d2', '2b7580',                                   // 16-17 fusion cyan
+  '121c1d', '213632', '475838', '8d8b4c',               // 18-21 foliage
+  '2b2a33', '4b4955', '7b6e66',                         // 22-24 stone
+  '7d6752', '4d392b', '24180f',                         // 25-27 soil dry -> wet
+  '333a46', '626c79', '9ca7b1', 'd6dfe3',               // 28-31 steel
+  'a3303b', 'd8605c', 'e0973a', 'eed27c', '8b7cb4', 'efe6cf', // 32-37 flowers
+  'd8c6a2', '6f7b82', '2a2532',                         // 38-40 cottage
+  'f1c7a0', 'c08a69', '744b47',                         // 41-43 skin
+  '3b2220', '70402c',                                   // 44-45 hair
+  '8a8c99',                                             // 46 cream shadow
+  '5c1a2b', '321526',                                   // 47-48 dress oxblood, plum
+  'ffffff', 'a8e6ee', '4a8db0',                         // 49-51 water
+  'ffc46b'                                              // 52 rim light
+];
+const C = {
+  BLK: 0, INK: 1, SK0: 2, SK1: 3, SK2: 4, SK3: 5, SK4: 6, GLOW: 7, HOT: 8, CLOUD: 9, HAZE: 10,
+  BAY0: 11, BAY1: 12, CITY0: 13, CITY1: 14, RED: 15, CYAN: 16, CYAND: 17,
+  F0: 18, F1: 19, F2: 20, F3: 21, ST0: 22, ST1: 23, ST2: 24, SOILD: 25, SOILM: 26, SOILW: 27,
+  S0: 28, S1: 29, S2: 30, S3: 31, CRIM: 32, CORAL: 33, MARI: 34, PALEY: 35, LAV: 36, CREAM: 37,
+  STUL: 38, STUS: 39, TRIM: 40, SKL: 41, SKM: 42, SKS: 43, HAIRD: 44, HAIRL: 45, CREAMS: 46,
+  OX: 47, PLUM: 48, WHITE: 49, WL: 50, WM: 51, RIM: 52
+};
+const NPAL = PAL_HEX.length;
+
+// ------------------------------------------------------------------ light ramps (palette remaps)
+function makeMap(pairs) {
+  const m = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) m[i] = i;
+  for (let i = 0; i < pairs.length; i += 2) m[pairs[i]] = pairs[i + 1];
+  return m;
+}
+// warm lamp / blind-slat light: one step brighter and warmer
+const LIT = makeMap([
+  0, 1, 1, 40, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 9, 5, 10, 31, 11, 12, 12, 23, 13, 14, 14, 4,
+  15, 33, 16, 50, 17, 16, 18, 19, 19, 20, 20, 21, 21, 35, 22, 24, 23, 6, 24, 7,
+  25, 6, 26, 25, 27, 26, 28, 29, 29, 30, 30, 31, 31, 8, 32, 33, 33, 34, 34, 35, 35, 8, 36, 37,
+  37, 8, 38, 37, 39, 38, 40, 39, 41, 8, 42, 41, 43, 42, 44, 45, 45, 6, 46, 37, 47, 32, 48, 47,
+  49, 49, 50, 49, 51, 50, 52, 8
+]);
+// cool shadow: one step darker and cooler
+const SHD = makeMap([
+  0, 0, 1, 0, 2, 1, 3, 2, 4, 3, 5, 4, 6, 5, 7, 6, 8, 7, 9, 2, 10, 4, 11, 0, 12, 11, 13, 2, 14, 13,
+  15, 47, 16, 17, 17, 12, 18, 1, 19, 18, 20, 19, 21, 20, 22, 1, 23, 22, 24, 23,
+  25, 26, 26, 27, 27, 0, 28, 1, 29, 28, 30, 29, 31, 30, 32, 47, 33, 32, 34, 6, 35, 34, 36, 4,
+  37, 46, 38, 39, 39, 40, 40, 1, 41, 42, 42, 43, 43, 44, 44, 1, 45, 44, 46, 28, 47, 48, 48, 0,
+  49, 50, 50, 51, 51, 12, 52, 7
+]);
+// searchlight / fog haze: cold, lighter
+const BEAM = makeMap([
+  2, 3, 3, 4, 4, 10, 5, 10, 6, 7, 9, 4, 11, 12, 12, 4, 13, 14, 14, 4, 18, 19, 19, 12, 0, 1, 1, 13
+]);
+// aircar underglow: lifts only mid/high values
+const UPG = makeMap([
+  23, 24, 24, 7, 29, 30, 30, 31, 31, 8, 38, 37, 39, 38, 20, 21, 21, 35, 25, 6, 34, 35, 36, 37,
+  32, 33, 42, 41, 37, 8, 46, 37, 5, 6, 6, 7
+]);
+// film grain on the darkest ramps (0 = not grain-eligible)
+const GRN = new Uint8Array(256);
+[[0, 1], [1, 0], [2, 1], [11, 12], [12, 11], [13, 2], [18, 19], [19, 18], [22, 1], [27, 26],
+ [28, 1], [40, 1], [44, 1], [48, 0]].forEach(p => { GRN[p[0]] = p[1] + 1; });
+
+// ------------------------------------------------------------------ math / noise helpers
+const BAYER = new Float32Array([0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (v + 0.5) / 16));
+function bay(x, y) { return BAYER[((y & 3) << 2) | (x & 3)]; }
+// integer hash (0..65535, always a small int so calls never box a double) + tiny inlinable scaler
+function hashi(a, b) {
+  let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul(b | 0, 0x165667b1) ^ 0x5bd1e995;
+  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
+  return (h ^ (h >>> 15)) >>> 16;
+}
+function hash(a, b) { return hashi(a, b) * 1.52587890625e-5; }   // [0,1)
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function smooth(t) { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); }
+function smoother(t) { t = clamp(t, 0, 1); return t * t * t * (t * (t * 6 - 15) + 10); }
+function frac(v) { return v - Math.floor(v); }
+// loop-locked oscillator: k whole cycles per loop
+function osc(k, t, ph) { return Math.sin(TAU * (k * t / LOOP_S + ph)); }
+// smooth 1D value noise, periodic with period p (integer)
+function pnoise(x, p, seed) {
+  const i = Math.floor(x), f = x - i, a = hash(((i % p) + p) % p, seed), b = hash((((i + 1) % p) + p) % p, seed);
+  return lerp(a, b, f * f * (3 - 2 * f));
+}
+
+// ------------------------------------------------------------------ framebuffer
+const fb = new Uint8Array(W * H);     // palette indices
+const lid = new Uint8Array(W * H);    // layer ids (light masks)
+const L = { NONE: 0, SKY: 1, CLOUD: 2, FAR: 3, BAY: 4, MID: 5, HILL: 6, WALL: 7, GROUND: 8,
+            BED: 9, PROP: 10, HOUSE: 11, ROBOT: 12, HER: 13, WATER: 14, CAR: 15, FG: 16, GLASS: 17 };
+
+function pset(x, y, c, id) {
+  if (x < 0 || x >= W || y < IY0 || y >= IY1) return;
+  const i = y * W + x; fb[i] = c; lid[i] = id;
+}
+function fillRect(x, y, w, h, c, id) {
+  const x0 = Math.max(0, x), x1 = Math.min(W, x + w), y0 = Math.max(IY0, y), y1 = Math.min(IY1, y + h);
+  for (let yy = y0; yy < y1; yy++) {
+    let i = yy * W + x0;
+    for (let xx = x0; xx < x1; xx++, i++) { fb[i] = c; lid[i] = id; }
+  }
+}
+// remap a single pixel if its layer id is accepted by mask (bitmask of layer ids)
+function premap(x, y, map, mask) {
+  if (x < 0 || x >= W || y < IY0 || y >= IY1) return;
+  const i = y * W + x;
+  if (mask & (1 << lid[i])) fb[i] = map[fb[i]];
+}
+const M_ALL = 0x7fffffff;
+const M_SKYISH = (1 << L.SKY) | (1 << L.CLOUD);
+const M_GROUNDISH = (1 << L.GROUND) | (1 << L.BED) | (1 << L.PROP) | (1 << L.WALL);
+const M_LIT = M_GROUNDISH | (1 << L.HER) | (1 << L.ROBOT) | (1 << L.HOUSE) | (1 << L.GLASS);
+
+// ------------------------------------------------------------------ layer buffers
+function makeLayer(w, h, f, defId) {
+  return { w, h, f, buf: new Uint8Array(w * h).fill(T), ids: new Uint8Array(w * h).fill(defId), defId };
+}
+function lset(ly, x, y, c, id) {
+  if (x < 0 || y < 0 || x >= ly.w || y >= ly.h) return;
+  const i = y * ly.w + x; ly.buf[i] = c; ly.ids[i] = id === undefined ? ly.defId : id;
+}
+function lget(ly, x, y) { return (x < 0 || y < 0 || x >= ly.w || y >= ly.h) ? T : ly.buf[y * ly.w + x]; }
+function lrect(ly, x, y, w, h, c, id) {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) lset(ly, xx, yy, c, id);
+}
+// blit a layer at camera offset (layer y maps to image row y when offset is 0)
+function blit(ly, ox, oy) {
+  const buf = ly.buf, ids = ly.ids, lw = ly.w;
+  for (let r = 0; r < IH; r++) {
+    const sy = r + oy;
+    if (sy < 0 || sy >= ly.h) continue;
+    let si = sy * lw + ox, di = (r + IY0) * W;
+    for (let x = 0; x < W; x++, si++, di++) {
+      const sx = x + ox;
+      if (sx < 0 || sx >= lw) continue;
+      const c = buf[si];
+      if (c !== T) { fb[di] = c; lid[di] = ids[si]; }
+    }
+  }
+}
+
+// =================================================================== SKY (parallax 0.05)
+const F_SKY = 0.05, F_FAR = 0.15, F_MID = 0.25, F_HILL = 0.5, F_GARDEN = 1.0, F_CAR = 0.7, F_FG = 1.4;
+const HZ = 86;              // sea horizon, far-layer y
+const SUN_X = 186;          // sun centre, sky-layer x
+const skyL = makeLayer(340, 138, F_SKY, L.SKY);
+
+// dusk gradient as one continuous level (plateaus + short ramps) plus a sunset bloom,
+// dithered once between neighbouring ramp colours so bands stay clean
+const SKY_RAMP = [C.SK0, C.SK1, C.SK2, C.SK3, C.SK4, C.GLOW, C.HOT];
+const SKY_KEYS = [0, 0, 11, 0, 21, 1, 31, 1, 42, 2, 51, 2, 62, 3, 69, 3, 80, 4];
+function skyLevel(y) {
+  for (let k = 0; k < SKY_KEYS.length - 2; k += 2) {
+    if (y < SKY_KEYS[k + 2]) return lerp(SKY_KEYS[k + 1], SKY_KEYS[k + 3], (y - SKY_KEYS[k]) / (SKY_KEYS[k + 2] - SKY_KEYS[k]));
+  }
+  return 4;
+}
+function buildSky() {
+  for (let y = 0; y < skyL.h; y++) for (let x = 0; x < skyL.w; x++) {
+    let v = skyLevel(y);
+    const dx = (x - SUN_X) / 92, dy = (y - (HZ + 1)) / 36, d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 1) v += 1.45 * (1 - d) * (1 - d);
+    v = Math.min(v, 4.85);
+    const i = Math.floor(v), f = clamp((v - i - 0.3) / 0.4, 0, 1);    // narrow dithered transitions
+    lset(skyL, x, y, SKY_RAMP[Math.min(6, i + (bay(x, y) < f ? 1 : 0))]);
+  }
+}
+
+// ---- cloud banks: 1D top/bottom profiles, drawn per frame with a loop-locked drift
+const CLOUDS = [
+  // x0 (sky coords), length, centre y, thickness, drift amplitude, drift phase, seed
+  { x0: -30, len: 260, cy: 27, th: 15, amp: 9, ph: 0.00, seed: 11 },
+  { x0: 110, len: 250, cy: 47, th: 12, amp: 7, ph: 0.35, seed: 23 },
+  { x0: -20, len: 360, cy: 64, th: 7, amp: 11, ph: 0.62, seed: 37 }
+];
+for (const cb of CLOUDS) {
+  cb.top = new Int16Array(cb.len); cb.bot = new Int16Array(cb.len);
+  for (let i = 0; i < cb.len; i++) {
+    const u = i / (cb.len - 1), taper = Math.sin(Math.PI * u);
+    const lump = pnoise(i / 16, 64, cb.seed) * 0.55 + pnoise(i / 6, 128, cb.seed + 1) * 0.3 + pnoise(i / 2.5, 256, cb.seed + 3) * 0.15;
+    const th = Math.max(0, Math.round(cb.th * Math.pow(taper, 0.6) * (0.35 + 0.9 * lump)));
+    cb.top[i] = cb.cy - th;
+    cb.bot[i] = cb.cy + Math.round(Math.pow(taper, 0.8) * (1 + pnoise(i / 14, 32, cb.seed + 2) * 2.2));
+  }
+}
+function drawClouds(f, camX, camY) {
+  const t = f / FPS;
+  const ox = Math.round(camX * F_SKY), oy = Math.round(camY * F_SKY);
+  const sunSx = SUN_X - ox;
+  for (let b = 0; b < CLOUDS.length; b++) {
+    const cb = CLOUDS[b];
+    const dx = Math.round(cb.amp * osc(1, t, cb.ph));
+    for (let i = 0; i < cb.len; i++) {
+      const sx = cb.x0 + i + dx - ox;
+      if (sx < 0 || sx >= W) continue;
+      const top = cb.top[i], bot = cb.bot[i];
+      if (bot <= top) continue;
+      const sunK = Math.max(0, 1 - Math.abs(sx - sunSx) / 110);    // underside heat near the sun
+      for (let y = top; y < bot; y++) {
+        const sy = y - oy + IY0;
+        let c = C.CLOUD;
+        const fromBot = bot - 1 - y;
+        if (fromBot === 0) c = (bay(sx, sy) < sunK * 0.9) ? C.GLOW : C.SK4;
+        else if (fromBot === 1) c = (bay(sx, sy) < 0.25 + sunK * 0.6) ? C.SK4 : (bay(sx + 2, sy) < 0.5 ? C.SK3 : C.CLOUD);
+        else if (fromBot === 2 && bay(sx, sy) < 0.2 + sunK * 0.3) c = C.SK3;
+        else if (y === top && bay(sx, sy) < 0.35) c = C.SK1;       // soft, cool upper edge
+        pset(sx, sy, c, L.CLOUD);
+      }
+    }
+  }
+}
+
+// ---- first stars near the zenith
+const STARS = [[22, 4, 3, 0.1], [71, 9, 5, 0.5], [133, 3, 4, 0.8], [204, 7, 6, 0.3], [262, 12, 3, 0.7], [301, 5, 5, 0.2]];
+function drawStars(f, camX, camY) {
+  const t = f / FPS;
+  const ox = Math.round(camX * F_SKY), oy = Math.round(camY * F_SKY);
+  for (let i = 0; i < STARS.length; i++) {
+    const s = STARS[i], x = s[0] - ox, y = s[1] - oy + IY0;
+    const i0 = y * W + x;
+    if (x < 0 || x >= W || lid[i0] !== L.SKY) continue;
+    const v = osc(s[2] * 3, t, s[3]) + 0.35 * osc(s[2] * 7, t, s[3] * 2);
+    if (v > 0.55) fb[i0] = C.HAZE; else if (v > -0.6) fb[i0] = C.SK2;
+  }
+}
+
+// ---- the sun: last molten sliver, cut by the sea horizon
+function drawSun(camX, camY, tick) {
+  const sx = SUN_X - Math.round(camX * F_SKY);
+  const hz = HZ - Math.round(camY * F_FAR) + IY0;
+  const cy = hz + 3;
+  for (let y = cy - 7; y < hz; y++) {
+    const dy = y - cy, hw = Math.sqrt(Math.max(0, 56 - dy * dy));
+    const shimmer = ((tick >> 3) + y) & 1;        // heat wobble every 8 ticks
+    for (let x = Math.round(sx - hw - shimmer * 0.5); x <= Math.round(sx + hw); x++) {
+      const e = Math.abs(x - sx) / (hw + 0.5);
+      pset(x, y, e > 0.8 ? C.GLOW : C.HOT, L.SKY);
+    }
+  }
+  // thin hot line on the horizon either side of the sun
+  for (let x = sx - 12; x <= sx + 12; x++) if (bay(x, hz) < 1 - Math.abs(x - sx) / 12) pset(x, hz - 1, C.GLOW, L.SKY);
+}
+
+// ---- searchlights: sweeping dithered haze wedges (origins on far-layer towers)
+const SEARCH = [
+  // far-layer origin x, y, base angle (rad from vertical), sweep amp, cycles/loop, phase, length
+  { x: 225, y: 34, a: 0.10, amp: 0.55, k: 2, ph: 0.00, len: 92 },
+  { x: 290, y: 46, a: -0.25, amp: 0.45, k: 3, ph: 0.40, len: 80 },
+  { x: 58, y: 56, a: 0.30, amp: 0.40, k: 2, ph: 0.70, len: 78 }
+];
+function drawSearchlights(f, camX, camY) {
+  const t = f / FPS;
+  const ox = Math.round(camX * F_FAR), oy = Math.round(camY * F_FAR);
+  for (let b = 0; b < SEARCH.length; b++) {
+    const s = SEARCH[b];
+    const ang = s.a + s.amp * osc(s.k, t, s.ph);
+    const sx0 = s.x - ox, sy0 = s.y - oy + IY0;
+    const tn = Math.tan(ang), cs = Math.cos(ang);
+    const rows = Math.floor(s.len * cs);
+    for (let r = 1; r < rows; r++) {
+      const y = sy0 - r;
+      if (y < IY0) break;
+      const dist = r / cs, u = dist / s.len;
+      const xc = sx0 + tn * r, hw = (0.8 + dist * 0.11) / cs;
+      const x0 = Math.floor(xc - hw), x1 = Math.ceil(xc + hw);
+      for (let x = x0; x <= x1; x++) {
+        if (x < 0 || x >= W) continue;
+        const e = 1 - Math.abs(x - xc) / (hw + 0.5);
+        if (e <= 0) continue;
+        const i = y * W + x, l = lid[i];
+        if (l !== L.SKY && l !== L.CLOUD) continue;
+        let dens = (0.5 - u * 0.4 + Math.max(0, 0.25 - u * 2)) * Math.min(1, e * 1.8);
+        if (l === L.CLOUD) dens = dens * 1.4 + 0.12;
+        if (bay(x, y) < dens) fb[i] = BEAM[fb[i]];
+      }
+    }
+  }
+}
+
+// =================================================================== FAR CITY + BAY (parallax 0.15)
+const farL = makeLayer(356, 140, F_FAR, L.FAR);
+const FAR_FRONT = [
+  [4, [14, 66], [10, 60], [6, 56]], [22, [10, 70], [6, 62], [2, 55]], [36, [16, 64], [12, 58], [8, 54], [4, 50]],
+  [56, [12, 72]], [70, [10, 62], [6, 56], [2, 48]], [84, [18, 68], [14, 64]],
+  [106, [12, 60], [8, 54], [4, 50], [1, 44]], [122, [16, 70], [10, 64]], [142, [10, 66], [6, 60]],
+  [160, [9, 58], [7, 50], [5, 44], [3, 40], [1, 33]],                       // left flank of the sun
+  [174, [6, 86]], [202, [9, 85]],                                          // low harbour sheds in the gap
+  [216, [14, 60], [12, 52], [10, 46], [6, 40], [4, 36], [2, 31], [1, 25]],   // mooring-mast tower
+  [234, [12, 66], [10, 58], [6, 54]], [248, [18, 56], [14, 50], [10, 46], [6, 42], [2, 37]],
+  [268, [8, 62], [4, 52], [1, 45]], [278, [20, 64], [16, 60]], [300, [10, 54], [8, 48], [4, 44], [1, 37]],
+  [312, [14, 68], [10, 62]], [328, [16, 60], [12, 54], [8, 50]], [345, [9, 70]]
+];
+const FAR_BASE = 89;
+const MAXWIN = 420;
+const winX = new Int16Array(MAXWIN), winY = new Int16Array(MAXWIN), winC = new Uint8Array(MAXWIN), winOn = new Uint8Array(MAXWIN);
+let winN = 0;
+const BEACONS = [];        // [x, y, phase]
+const REFL_X = [];         // shoreline x positions that mirror city lights
+
+function towerTiers(spec, base, col, front, sunSide) {
+  const x = spec[0], w0 = spec[1][0], cx = x + (w0 >> 1);
+  let prevTop = base;
+  for (let k = 1; k < spec.length; k++) {
+    const tw = spec[k][0], top = spec[k][1], lx = cx - (tw >> 1);
+    for (let y = top; y < prevTop; y++) for (let xx = lx; xx < lx + tw; xx++) {
+      let c = col;
+      // sunset rim on the edge that faces the sun, deco fluting on wide tiers
+      if (front && tw > 2 && xx === (sunSide > 0 ? lx + tw - 1 : lx)) c = (y < top + 2) ? C.SK3 : C.CITY1;
+      else if (front && tw >= 10 && ((xx - lx) % 4 === 1) && y > top + 1) c = C.SK0;
+      lset(farL, xx, y, c, L.FAR);
+    }
+    // setback ledge catching light
+    if (front && tw > 3) for (let xx = lx; xx < lx + tw; xx++) if (bay(xx, top) < 0.5) lset(farL, xx, top, C.CITY1, L.FAR);
+    if (front && tw > 3) {
+      for (let y = top + 2; y < prevTop - 1; y += 3) for (let xx = lx + 1; xx < lx + tw - 1; xx += 2) {
+        if (winN >= MAXWIN || hash(xx * 7 + y, 5) > 0.42) continue;
+        winX[winN] = xx; winY[winN] = y; winC[winN] = hash(xx, y) < 0.72 ? C.GLOW : C.SK4;
+        winOn[winN] = hash(xx, y * 3) < 0.55 ? 1 : 0; winN++;
+      }
+    }
+    if (k === spec.length - 1 && tw <= 2 && top < 56) BEACONS.push([cx, top - 1, hash(cx, 9)]);
+    prevTop = top;
+  }
+}
+function buildFar() {
+  // bay water
+  for (let y = HZ; y < farL.h; y++) for (let x = 0; x < farL.w; x++) {
+    let c = C.BAY0;
+    const d = y - HZ;
+    if (d === 0) c = bay(x, y) < 0.7 ? C.SK2 : C.BAY1;
+    else if (d < 3) c = bay(x, y) < 0.6 - d * 0.15 ? C.BAY1 : C.BAY0;
+    else if (hash(x >> 3, y) < 0.14 && (y & 1)) c = C.BAY1;                      // long ripple dashes
+    lset(farL, x, y, c, L.BAY);
+  }
+  // back row (hazier, lighter)
+  let x = -4;
+  while (x < farL.w) {
+    const w = 5 + Math.floor(hash(x, 1) * 8), h = 10 + Math.floor(hash(x, 2) * 22);
+    if (!(x + w > 168 && x < 214)) {
+      const top = FAR_BASE - h;
+      const spec = [x, [w, top]];
+      if (hash(x, 3) < 0.5) spec.push([Math.max(1, w - 4), top - 4]);
+      if (hash(x, 4) < 0.3) spec.push([1, top - 9]);
+      towerTiers(spec, FAR_BASE - 1, C.CITY1, false, 0);
+    }
+    x += w + Math.floor(hash(x, 5) * 5) - 1;
+  }
+  // front row (darker silhouettes with lit windows)
+  for (let i = 0; i < FAR_FRONT.length; i++) {
+    const s = FAR_FRONT[i];
+    const centre = s[0] + (s[1][0] >> 1);
+    towerTiers(s, FAR_BASE, C.CITY0, true, centre < 192 ? 1 : -1);
+  }
+  // shoreline: a dark quay line and mirrored light positions
+  for (let xx = 0; xx < farL.w; xx++) {
+    if (lget(farL, xx, FAR_BASE - 1) !== T && lget(farL, xx, FAR_BASE - 1) !== C.BAY0) {
+      lset(farL, xx, FAR_BASE, C.INK, L.FAR);
+      if (hash(xx, 77) < 0.07) REFL_X.push(xx);
+    }
+  }
+}
+
+const LANE_Y = [50, 59, 71], LANE_K = [1, 2, 1];
+const SHIP_X = [118, 244, 302], SHIP_Y = [96, 101, 93], SHIP_LEN = [10, 15, 7];
+function drawFarDynamic(tick, camX, camY) {
+  const t = tick / FPS;
+  const ox = Math.round(camX * F_FAR), oy = Math.round(camY * F_FAR) - IY0;
+  const seg = Math.floor(t / 1.5);                      // 36 segments per loop
+  // windows: stable base with occasional switches
+  for (let i = 0; i < winN; i++) {
+    let on = winOn[i];
+    if (hash(i, 1000 + seg) < 0.05) on ^= 1;
+    if (!on) continue;
+    const x = winX[i] - ox, y = winY[i] - oy;
+    if (x >= 0 && x < W && y >= IY0 && y < IY1 && lid[y * W + x] === L.FAR) fb[y * W + x] = winC[i];
+  }
+  // aviation beacons
+  for (let i = 0; i < BEACONS.length; i++) {
+    const b = BEACONS[i];
+    if (frac(36 * t / LOOP_S + b[2]) < 0.22) pset(b[0] - ox, b[1] - oy, C.RED, L.FAR);
+  }
+  // city light reflections on the bay (shimmer every 8 ticks)
+  const sh = tick >> 3;
+  for (let i = 0; i < REFL_X.length; i++) {
+    const x = REFL_X[i] - ox;
+    if (x < 0 || x >= W) continue;
+    const len = 1 + Math.floor(hash(i, sh) * 2);
+    for (let k = 0; k < len; k++) {
+      const y = FAR_BASE + 1 + k * 2 + (hash(i, sh + k) < 0.5 ? 0 : 1) - oy;
+      if (y >= IY0 && y < IY1 && lid[y * W + x] === L.BAY) fb[y * W + x] = k === 0 ? C.SK4 : C.SK3;
+    }
+  }
+  // sun reflection column: stacked horizontal glints under the sun, re-dealt every 8 ticks (shimmer)
+  const sunSx = SUN_X - Math.round(camX * F_SKY), hz = HZ - oy;
+  for (let y = hz + 1; y < IY1; y++) {
+    const d = y - hz;
+    if (d > 2 && (d & 1)) continue;                                        // glints on alternate rows
+    if (d > 9 && hash(d, sh + 7) < 0.45) continue;                          // broken deeper down
+    const span = 1.2 + d * 0.3, len = span * (0.35 + 0.65 * hash(d, sh));
+    const cxr = sunSx + Math.round((hash(d + 40, sh) - 0.5) * span * 0.7);
+    for (let x = Math.round(cxr - len); x <= Math.round(cxr + len); x++) {
+      if (x < 0 || x >= W) continue;
+      const i = y * W + x;
+      if (lid[i] !== L.BAY) continue;
+      const e = 1 - Math.abs(x - cxr) / (len + 0.5);
+      fb[i] = d < 4 ? (e > 0.4 ? C.HOT : C.GLOW) : d < 11 ? (e > 0.55 ? C.GLOW : C.SK4) : (e > 0.5 ? C.SK4 : C.SK3);
+    }
+  }
+  // distant aircar traffic: paired light pixels on loop-locked lanes
+  for (let ln = 0; ln < 3; ln++) {
+    const ly = LANE_Y[ln], k = LANE_K[ln], dir = ln === 1 ? -1 : 1, span = 384;
+    for (let c = 0; c < 5; c++) {
+      const x0 = hash(ln, c) * span;
+      let x = (x0 + dir * span * k * t / LOOP_S) % span; if (x < 0) x += span;
+      const sx = Math.round(x) - 20 - ox, sy = ly + (c & 1) - oy;
+      const col = (c + ln) % 3 === 0 ? C.RED : C.GLOW;
+      pset(sx, sy, col, L.FAR); pset(sx + 1, sy, col, L.FAR);
+    }
+  }
+  // ships: dark hulls with deck lights, gently drifting
+  for (let s = 0; s < 3; s++) {
+    const bx = SHIP_X[s] + Math.round(4 * osc(1, t, s * 0.3)), by = SHIP_Y[s], len = SHIP_LEN[s];
+    const sx = bx - ox, sy = by - oy;
+    for (let x = 0; x < len; x++) pset(sx + x, sy, C.BLK, L.FAR);
+    for (let x = 2; x < len - 2; x++) pset(sx + x, sy - 1, C.BLK, L.FAR);
+    pset(sx + (len >> 1), sy - 2, C.BLK, L.FAR);
+    pset(sx + 1, sy - 1, C.GLOW, L.FAR);
+    if (frac(18 * t / LOOP_S + s * 0.37) < 0.5) pset(sx + len - 2, sy - 1, s === 1 ? C.RED : C.GLOW, L.FAR);
+    pset(sx + (len >> 1), sy + 1, C.SK4, L.BAY);
+  }
+}
+// harbour fog: periodic noise texture (128 px, precomputed) drifting one period per loop, on the water
+const FOG_H = 20, FOG_P = 128;
+const fogTex = new Float32Array(FOG_H * FOG_P);
+function buildFog() {
+  for (let r = 0; r < FOG_H; r++) for (let x = 0; x < FOG_P; x++) {
+    const u = x / 16, fy = HZ + 4 + r;
+    const n = pnoise(u, 8, 91) * 0.7 + pnoise(u * 2 + fy * 0.3, 16, 92) * 0.3;
+    fogTex[r * FOG_P + x] = Math.sin(Math.PI * r / FOG_H) * (n - 0.42) * 0.8;
+  }
+}
+function drawFog(f, camX, camY) {
+  const ox = Math.round(camX * F_FAR), oy = Math.round(camY * F_FAR) - IY0;
+  const drift = Math.floor(FOG_P * f / LOOP_F);
+  for (let r = 0; r < FOG_H; r++) {
+    const y = HZ + 4 + r - oy;
+    if (y < IY0 || y >= IY1) continue;
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x, l = lid[i];
+      if (l !== L.BAY && l !== L.FAR) continue;
+      if (bay(x, y) < fogTex[r * FOG_P + ((x + ox + drift) & (FOG_P - 1))]) fb[i] = BEAM[fb[i]];
+    }
+  }
+}
+
+// =================================================================== FUSION HEADLAND + BRIDGE (parallax 0.25)
+const midL = makeLayer(364, 140, F_MID, L.MID);
+const DOME_X = 46, DOME_Y = 76, TOWER_X = [78, 95], TOWER_TOP = 54;
+const BR_T1 = 176, BR_T2 = 276, BR_TOP = 64, BR_DECK = 88;
+function cableY(x) {
+  if (x < BR_T1) return lerp(BR_DECK - 2, BR_TOP + 1, (x - 128) / (BR_T1 - 128)) + 2 * Math.sin(Math.PI * (x - 128) / (BR_T1 - 128));
+  if (x > BR_T2) return lerp(BR_TOP + 1, BR_DECK - 2, (x - BR_T2) / 60) + 2 * Math.sin(Math.PI * (x - BR_T2) / 60);
+  const u = (x - (BR_T1 + BR_T2) / 2) / ((BR_T2 - BR_T1) / 2);
+  return BR_DECK - 3 - (BR_DECK - 4 - BR_TOP) * u * u;
+}
+function buildMid() {
+  const ml = midL;
+  // headland mass
+  for (let x = 0; x < 140; x++) {
+    const cliff = x < 98 ? 0 : Math.pow((x - 98) / 40, 1.4) * 17;
+    const top = Math.round(77 + cliff + pnoise(x / 6, 64, 3) * 3 - 1.5);
+    for (let y = top; y < 96; y++) {
+      let c = C.SK0;
+      if (y === top && x > 60) c = bay(x, y) < 0.5 ? C.CITY0 : C.SK0;
+      else if (hash(x, y) < 0.1) c = C.CITY0;
+      lset(ml, x, y, c);
+    }
+    if (x > 56 && x % 5 === 0 && x < 132) lset(ml, x, Math.min(94, top + 3 + (x & 1)), C.GLOW);   // shore road lamps
+  }
+  // low plant buildings with a few warm windows
+  const blocks = [[6, 69, 22], [58, 71, 12], [104, 70, 16]];
+  for (const b of blocks) {
+    lrect(ml, b[0], b[1], b[2], 78 - b[1], C.CITY0);
+    for (let x = b[0] + 1; x < b[0] + b[2] - 1; x += 2) if (hash(x, b[1]) < 0.45) lset(ml, x, b[1] + 2, C.SK4);
+  }
+  // stacks and a gantry crane
+  lrect(ml, 20, 57, 2, 13, C.CITY0); lrect(ml, 112, 60, 2, 11, C.CITY0);
+  for (let i = 0; i < 16; i++) lset(ml, 124 + (i >> 1), 70 - i, C.CITY0);
+  for (let i = 0; i < 10; i++) lset(ml, 130 + i, 62, C.CITY0);
+  lrect(ml, 138, 62, 1, 7, C.CITY0);
+  // the dome
+  for (let y = DOME_Y - 12; y <= DOME_Y; y++) for (let x = DOME_X - 15; x <= DOME_X + 15; x++) {
+    const dx = (x - DOME_X) / 15, dy = (y - DOME_Y) / 12;
+    if (dx * dx + dy * dy > 1) continue;
+    let c = C.CITY0;
+    const edge = dx * dx + dy * dy > 0.8;
+    if (edge && dx > 0.1 && dy < -0.2) c = bay(x, y) < 0.6 ? C.SK3 : C.CITY1;       // sunset rim
+    else if (edge) c = C.CITY1;
+    else if (((x - DOME_X + 20) % 5) === 0) c = C.SK0;                                // ribs
+    else if (dy < -0.75) c = C.CITY1;
+    lset(ml, x, y, c);
+  }
+  for (let x = DOME_X - 12; x <= DOME_X + 12; x += 2) lset(ml, x, DOME_Y - 2, C.CYAND);  // core slit
+  // cooling towers (hyperboloids)
+  for (let k = 0; k < 2; k++) {
+    const cx = TOWER_X[k];
+    for (let y = TOWER_TOP; y <= 77; y++) {
+      const u = (y - TOWER_TOP) / (77 - TOWER_TOP), hw = 3.2 + 2.6 * Math.pow(Math.abs(u - 0.35) / 0.65, 1.6) * (u > 0.35 ? 1 : 0.45);
+      for (let x = Math.round(cx - hw); x <= Math.round(cx + hw); x++) {
+        let c = C.CITY0;
+        if (x === Math.round(cx + hw)) c = u < 0.5 ? C.SK3 : C.CITY1;
+        if (y === TOWER_TOP) c = C.SK4;                                   // mouth lit by the plume
+        lset(ml, x, y, c);
+      }
+    }
+  }
+  // suspension bridge: towers, deck, lamps, cables, suspenders
+  for (let k = 0; k < 2; k++) {
+    const tx = k ? BR_T2 : BR_T1;
+    for (let y = BR_TOP; y < 96; y++) { lset(ml, tx - 2, y, C.CITY0); lset(ml, tx + 2, y, C.CITY0); }
+    for (let y = BR_TOP; y < 96; y += 7) for (let x = tx - 2; x <= tx + 2; x++) lset(ml, x, y, C.CITY0);
+    lset(ml, tx - 1, BR_TOP - 1, C.CITY0); lset(ml, tx + 1, BR_TOP - 1, C.CITY0); lset(ml, tx, BR_TOP - 2, C.CITY0);
+    lset(ml, tx + 2, BR_TOP + 3, C.SK3);
+  }
+  for (let x = 124; x < ml.w; x++) {
+    lset(ml, x, BR_DECK, C.SK0); lset(ml, x, BR_DECK + 1, C.INK);
+    if (x % 4 === 0) lset(ml, x, BR_DECK - 1, (x % 8) ? C.SK4 : C.GLOW);
+    if (x > 128 && x < 336) {
+      const cy = Math.round(cableY(x));
+      lset(ml, x, cy, C.CITY0);
+      if (x % 6 === 0) for (let y = cy + 1; y < BR_DECK - 1; y++) lset(ml, x, y, C.CITY0);
+    }
+  }
+  for (let x = 130; x < ml.w; x += 26) lrect(ml, x, BR_DECK + 2, 1, 3, C.INK);      // approach piers
+}
+const CYANGLOW = makeMap([0, 17, 1, 17, 2, 17, 3, 17, 11, 17, 12, 17, 13, 17, 14, 17, 17, 16, 4, 17]);
+function drawMidDynamic(f, camX, camY) {
+  const t = f / FPS;
+  const ox = Math.round(camX * F_MID), oy = Math.round(camY * F_MID) - IY0;
+  // fusion core: slow cyan pulse (9 cycles per loop)
+  const pulse = 0.55 + 0.45 * osc(9, t, 0);
+  const cx = DOME_X - ox, cy = DOME_Y - 2 - oy;
+  for (let y = cy - 9; y <= cy + 6; y++) for (let x = cx - 26; x <= cx + 26; x++) {
+    if (x < 0 || x >= W || y < IY0 || y >= IY1) continue;
+    const dx = (x - cx) / 26, dy = (y - cy) / (y < cy ? 9 : 6), d = dx * dx + dy * dy;
+    if (d >= 1) continue;
+    const i = y * W + x;
+    if (lid[i] !== L.MID && lid[i] !== L.BAY && lid[i] !== L.FAR && lid[i] !== L.SKY) continue;
+    if (bay(x, y) < (1 - d) * (1 - d) * 0.5 * pulse) fb[i] = CYANGLOW[fb[i]];
+  }
+  for (let x = cx - 12; x <= cx + 12; x += 2) if (pulse > 0.35) pset(x, cy, pulse > 0.8 ? C.CYAN : C.CYAND, L.MID);
+  if (pulse > 0.7) { pset(cx - 1, cy, C.CYAN, L.MID); pset(cx + 1, cy, C.CYAN, L.MID); }
+  // stack beacons
+  if (frac(27 * t / LOOP_S) < 0.25) { pset(20 - ox, 56 - oy, C.RED, L.MID); pset(112 - ox, 59 - oy, C.RED, L.MID); }
+  if (frac(27 * t / LOOP_S + 0.5) < 0.25) { pset(BR_T1 - ox, BR_TOP - 3 - oy, C.RED, L.MID); pset(BR_T2 - ox, BR_TOP - 3 - oy, C.RED, L.MID); }
+  // traffic crossing the bridge (paired lights)
+  for (let c = 0; c < 4; c++) {
+    const span = 240, dir = c & 1 ? -1 : 1;
+    let x = (hash(c, 55) * span + dir * span * 2 * t / LOOP_S) % span; if (x < 0) x += span;
+    const sx = 124 + Math.round(x) - ox, sy = BR_DECK - oy;
+    const col = dir > 0 ? C.HOT : C.RED;
+    pset(sx, sy, col, L.MID); pset(sx + 1, sy, col, L.MID);
+  }
+}
+
+// =================================================================== NEAR HILLSIDE (parallax 0.5)
+const hillL = makeLayer(404, 158, F_HILL, L.HILL);
+const hillTop = new Int16Array(404);
+const TREES = [];          // x, baseY, height, width, kind (0 cypress, 1 pine), phase
+const TREE_L = [], TREE_R = [];
+const HILL_DROP = 8;       // crest sits low enough for the bay to show through the railing
+const NEON_X = 322, NEON_Y = 94 + HILL_DROP;
+function buildHill() {
+  const hl = hillL;
+  for (let x = 0; x < hl.w; x++) {
+    const top = Math.round(100 + HILL_DROP + x * 0.045 + (pnoise(x / 11, 64, 7) - 0.5) * 6 + (pnoise(x / 4, 128, 8) - 0.5) * 2);
+    hillTop[x] = top;
+    for (let y = top; y < hl.h; y++) {
+      let c = C.F0;
+      if (y - top < 3 && bay(x, y) < 0.45 - (y - top) * 0.12) c = C.F1;             // hazier crest
+      else if (hash(x, y) < 0.06) c = C.INK;
+      lset(hl, x, y, c);
+    }
+  }
+  // terraces stepping down: retaining walls with tiny lamps
+  for (let r = 0; r < 3; r++) {
+    const yb = 118 + HILL_DROP + r * 9;
+    for (let x = 0; x < hl.w; x++) {
+      if (hillTop[x] > yb - 2) continue;
+      if (((x + r * 37) % 90) > 70) continue;
+      lset(hl, x, yb, C.ST0); lset(hl, x, yb + 1, C.INK);
+      if (((x + r * 11) % 23) === 0) { lset(hl, x, yb - 1, C.GLOW); lset(hl, x, yb - 2, C.SK4); }
+    }
+  }
+  // road and diner
+  const D = HILL_DROP;
+  for (let x = 250; x < hl.w; x++) { lset(hl, x, 127 + D + ((x - 250) >> 5), C.ST0); if ((x & 7) === 0) lset(hl, x, 126 + D + ((x - 250) >> 5), C.SK4); }
+  lrect(hl, 296, 117 + D, 22, 10, C.TRIM);
+  for (let x = 296; x < 318; x++) { lset(hl, x, 116 + D, C.S1); lset(hl, x, 119 + D, C.S1); }
+  for (let x = 298; x < 316; x += 2) { lset(hl, x, 121 + D, C.GLOW); lset(hl, x, 122 + D, C.SK4); }
+  lset(hl, 317, 116 + D, C.SK3);
+  lrect(hl, NEON_X, NEON_Y + 5, 1, 22, C.INK);
+  // trees along the crest
+  const spots = [[6, 0, 26, 4], [14, 0, 20, 3], [30, 1, 9, 13], [52, 0, 24, 4], [60, 0, 17, 3], [84, 1, 8, 12],
+    [118, 0, 28, 5], [126, 0, 22, 4], [150, 1, 10, 15], [160, 0, 20, 3], [212, 0, 25, 4], [228, 1, 9, 13],
+    [256, 0, 27, 5], [264, 0, 21, 4], [285, 0, 16, 3], [340, 1, 10, 14], [362, 0, 26, 4], [372, 0, 20, 3], [392, 1, 8, 12]];
+  for (const s of spots) TREES.push([s[0], hillTop[Math.min(hl.w - 1, s[0])] + 3, s[2], s[3], s[1], hash(s[0], 4)]);
+  // precomputed integer row spans (left offset, right offset) per tree row: no float math per frame
+  for (let t = 0; t < TREES.length; t++) {
+    const tr = TREES[t], h = tr[2], w = tr[3];
+    const L0 = new Int8Array(h + 4), R0 = new Int8Array(h + 4);
+    if (tr[4] === 0) for (let k = 0; k < h; k++) {
+      const u = k / h, hw = Math.max(0.5, (w / 2) * Math.sin(Math.PI * Math.min(1, (u + 0.08) * 0.95)) * (u < 0.3 ? 0.8 + u : 1.1 - u * 0.4));
+      L0[k] = Math.round(-hw); R0[k] = Math.round(hw);
+    }
+    else for (let r = 0; r < 4; r++) { const hw = Math.round((w / 2) * (r === 0 ? 0.7 : r === 3 ? 0.8 : 1)); L0[r] = -hw; R0[r] = hw; }
+    TREE_L.push(L0); TREE_R.push(R0);
+  }
+}
+// neon atom emblem: red ring, cyan orbits (offsets from centre)
+const NEON_RED = [], NEON_CYAN = [];
+(function () {
+  for (let a = 0; a < 40; a++) {
+    const x = Math.round(3.6 * Math.cos(a / 40 * TAU)), y = Math.round(3.6 * Math.sin(a / 40 * TAU));
+    if (!NEON_RED.some(p => p[0] === x && p[1] === y)) NEON_RED.push([x, y]);
+  }
+  for (let o = 0; o < 3; o++) for (let a = 0; a < 32; a++) {
+    const u = 2.6 * Math.cos(a / 32 * TAU), v = 0.9 * Math.sin(a / 32 * TAU), r = o * Math.PI / 3;
+    const x = Math.round(u * Math.cos(r) - v * Math.sin(r)), y = Math.round(u * Math.sin(r) + v * Math.cos(r));
+    if (!NEON_CYAN.some(p => p[0] === x && p[1] === y) && (x || y)) NEON_CYAN.push([x, y]);
+  }
+})();
+// flicker-stutter: mostly on, with short stutter bursts at a few loop-locked moments
+function neonState(f) {
+  const t = f / FPS;
+  const g = (f / 3) | 0;                        // 20 Hz flicker grid (1080 steps per loop)
+  const burst = Math.floor(t / 4.5);            // 12 windows per loop
+  if (hash(burst, 71) < 0.5) {
+    const s = g - Math.floor((burst * 4.5 + hash(burst, 72) * 3) * 20);
+    if (s >= 0 && s < 10) return (0x2d5 >> s) & 1;   // on-off stutter pattern
+  }
+  return 1;
+}
+function drawHillDynamic(f, camX, camY) {
+  const t = f / FPS;
+  const ox = Math.round(camX * F_HILL), oy = Math.round(camY * F_HILL) - IY0;
+  // trees with a 1px breeze sway at their tops (row spans precomputed as ints)
+  for (let i = 0; i < TREES.length; i++) {
+    const tr = TREES[i], sx = tr[0] - ox, by = tr[1] - oy, h = tr[2];
+    if (sx < -20 || sx > W + 20) continue;
+    const sway = osc(6, t, tr[5]) > 0.25 ? 1 : 0, Lr = TREE_L[i], Rr = TREE_R[i];
+    if (tr[4] === 0) {                                     // cypress flame
+      const swayFrom = (h * 0.55) | 0;
+      for (let k = 0; k < h; k++) {
+        const sw = k > swayFrom ? sway : 0, y = by - k, xr = sx + Rr[k];
+        for (let x = sx + Lr[k]; x <= xr; x++) pset(x + sw, y, x === xr && bay(x, y) < 0.6 ? C.F1 : C.F0, L.HILL);
+      }
+    } else {                                               // umbrella pine
+      for (let k = 0; k < h - 3; k++) pset(sx, by - k, C.F0, L.HILL);
+      for (let r = 0; r < 4; r++) {
+        const y = by - h - 1 + r, sw = r < 2 ? sway : 0;
+        for (let x = sx + Lr[r]; x <= sx + Rr[r]; x++) pset(x + sw, y, r === 0 && bay(x, y) < 0.5 ? C.F1 : C.F0, L.HILL);
+      }
+    }
+  }
+  // diner atom sign
+  const on = neonState(f), nx = NEON_X - ox, ny = NEON_Y - oy;
+  if (on) {
+    for (let y = ny - 8; y <= ny + 8; y++) for (let x = nx - 8; x <= nx + 8; x++) {
+      if (x < 0 || x >= W || y < IY0 || y >= IY1) continue;
+      const d = ((x - nx) * (x - nx) + (y - ny) * (y - ny)) / 64;
+      if (d < 1 && bay(x, y) < (1 - d) * (1 - d) * 0.3) fb[y * W + x] = CYANGLOW[fb[y * W + x]];
+    }
+  }
+  for (let i = 0; i < NEON_RED.length; i++) pset(nx + NEON_RED[i][0], ny + NEON_RED[i][1], on ? C.RED : C.OX, L.HILL);
+  for (let i = 0; i < NEON_CYAN.length; i++) pset(nx + NEON_CYAN[i][0], ny + NEON_CYAN[i][1], on ? C.CYAN : C.CYAND, L.HILL);
+  pset(nx, ny, on ? C.HOT : C.CYAND, L.HILL);
+}
+// atmospheric haze step between the bay/headland and the hill crest
+function drawHillHaze(camX, camY) {
+  const ox = Math.round(camX * F_HILL), oy = Math.round(camY * F_HILL) - IY0;
+  for (let x = 0; x < W; x++) {
+    const hx = x + ox;
+    if (hx < 0 || hx >= hillL.w) continue;
+    const top = hillTop[hx] - oy;
+    for (let k = 1; k <= 7; k++) {
+      const y = top - k;
+      if (y < IY0 || y >= IY1) continue;
+      const i = y * W + x, l = lid[i];
+      if (l !== L.BAY && l !== L.MID && l !== L.FAR) continue;
+      if (bay(x, y) < 0.42 - k * 0.055) fb[i] = BEAM[fb[i]];
+    }
+  }
+}
+
+// =================================================================== GARDEN TERRACE (parallax 1.0)
+const gardenL = makeLayer(480, 150, F_GARDEN, L.GROUND);
+const HOUSE_R = 105;                       // cottage right edge (rounded corner)
+const COPING = 118, BED_RIM = 125, BED_SOIL = 123, BED_BASE = 132, WALL_BASE = 124, PATH_TOP = 125, PATH_BOT = 145, FEET = 136;
+const BEDS = [{ x: 124, kind: 0 }, { x: 196, kind: 1 }, { x: 266, kind: 2 }];
+const BED_W = 28, STAND = [158, 230, 300], STEP_X = 86;
+const LAMPS = [{ x: 91, y: 101, porch: 1 }, { x: 172, y: 90, porch: 0 }, { x: 326, y: 90, porch: 0 }];
+const PIPE_X = 346;
+const CLOCHES = [187, 254, 372, 381, 390];
+function slope(x) { return x < 130 ? 0 : Math.min(5, Math.floor((x - 130) / 36)); }
+function groundY(x) { return FEET - slope(x); }
+const shadowMask = new Uint8Array(480 * 150);   // baked static shadows (so dynamic ones don't double up)
+
+function gset(x, y, c, id) { lset(gardenL, x, y, c, id); }
+function gshade(x, y) {
+  if (x < 0 || y < 0 || x >= 480 || y >= 150) return;
+  const i = y * 480 + x;
+  if (gardenL.ids[i] !== L.GROUND || shadowMask[i]) return;
+  gardenL.buf[i] = SHD[gardenL.buf[i]]; shadowMask[i] = 1;
+}
+
+function buildPath() {
+  // flagstones in path space (v = rows below the path top), courses grow toward the camera
+  const COURSE = [0, 4, 9, 15, 22, 30];
+  for (let x = 0; x < 480; x++) {
+    const s = slope(x);
+    for (let v = 0; v < 150 - PATH_TOP + 6; v++) {
+      const y = PATH_TOP + v - s;
+      if (y < 0 || y >= 150) continue;
+      let c;
+      if (v >= PATH_BOT - PATH_TOP) {                         // lawn edge below the path
+        c = (v === PATH_BOT - PATH_TOP) ? C.INK : (hash(x >> 1, v) < 0.25 ? C.F1 : C.F0);
+        gset(x, y, c, L.GROUND); continue;
+      }
+      let k = 0; while (k < 4 && v >= COURSE[k + 1]) k++;
+      const cv = v - COURSE[k];
+      const off = Math.floor(hash(k, 3) * 11) + k * 7;
+      let sx = x + off, id = 0, acc = 0;
+      while (true) { const w = 11 + Math.floor(hash(id, k * 31) * 9) + k * 3; if (sx < acc + w) break; acc += w; id++; }
+      const inStone = sx - acc;
+      const wet = hash(id, k * 7 + 1) < 0.3;
+      if (cv === 0 || inStone === 0) c = C.ST0;
+      else {
+        c = wet ? C.ST0 : C.ST1;
+        if (cv === 1 && !wet) c = C.ST2;                                            // lit leading edge
+      }
+      if (cv === 0 && inStone === 0) c = C.INK;
+      gset(x, y, c, L.GROUND);
+    }
+  }
+}
+function buildWall() {
+  for (let x = HOUSE_R + 1; x < 480; x++) {
+    const s = slope(x);
+    // coping stone (sunset-lit top) and block face
+    gset(x, COPING - s, bay(x, 0) < 0.55 ? C.ST2 : C.SK3, L.WALL);
+    gset(x, COPING + 1 - s, C.ST1, L.WALL);
+    for (let y = COPING + 2; y <= WALL_BASE; y++) {
+      const r = y - COPING - 2, course = r < 3 ? 0 : 1, joint = ((x + course * 5) % 10) === 0;
+      let c = (r === 2 || joint) ? C.INK : C.ST0;
+      if (!joint && r !== 2 && hash(x >> 1, y) < 0.18) c = C.ST1;
+      gset(x, y - s, c, L.WALL);
+    }
+    // iron railing: top rail, balusters every 4px, posts with finials every 24px
+    const rt = COPING - 10 - s;
+    gset(x, rt, C.INK, L.WALL);
+    if (((x - HOUSE_R) & 3) === 0) for (let y = rt + 1; y < COPING - s; y++) gset(x, y, C.INK, L.WALL);
+    if (((x - HOUSE_R) % 24) === 12) {
+      for (let y = rt - 2; y < COPING - s; y++) gset(x, y, C.INK, L.WALL);
+      gset(x - 1, rt - 1, C.INK, L.WALL); gset(x + 1, rt - 1, C.INK, L.WALL); gset(x, rt - 3, C.INK, L.WALL);
+      gset(x + 1, rt - 2, C.SK4, L.WALL);                                         // finial catching the sun
+    }
+    if (((x - HOUSE_R) & 3) === 2) gset(x, rt + 5, C.INK, L.WALL);               // scroll band
+  }
+}
+function buildCottage() {
+  const R = HOUSE_R;
+  for (let y = 62; y <= WALL_BASE; y++) for (let x = 0; x <= R; x++) {
+    if (y <= 64 && x >= R - 1 && (x - (R - 2)) + (65 - y) > 3) continue;          // rounded parapet corner
+    let c = C.ST1;
+    const lift = (x - 50) / 47 + (y < 70 ? 0.25 : 0);                               // cool stucco toward the corner
+    if (bay(x, y) < lift) c = C.STUS;
+    if (x >= 97) {                                                                // rounded corner catching sunset
+      const u = (x - 97) / (R - 97);
+      c = u < 0.25 ? (bay(x, y) < 0.4 ? C.STUL : C.STUS) : u < 0.8 ? C.STUL : (x === R ? C.RIM : C.CREAM);
+    } else if (x < 4) c = C.TRIM;
+    else if (y > 119) c = y > 121 ? C.TRIM : (bay(x, y) < 0.5 ? C.TRIM : c);      // ground contact occlusion
+    if (y === 62) c = x > 90 ? C.RIM : C.STUL;                                    // parapet cap rim
+    else if (y === 66) c = x >= 97 ? C.STUS : C.TRIM;
+    gset(x, y, c, L.HOUSE);
+  }
+  // chrome speed-lines wrapping the corner
+  for (let k = 0; k < 3; k++) {
+    const y = 70 + k * 3;
+    for (let x = 4; x <= R; x++) {
+      gset(x, y, x >= 99 ? C.S3 : (x >= 93 ? C.S2 : C.S1), L.HOUSE);
+      if (x < 97) gset(x, y + 1, C.TRIM, L.HOUSE);
+    }
+  }
+  // porthole window
+  for (let y = 84; y <= 96; y++) for (let x = 10; x <= 22; x++) {
+    const d = Math.hypot(x - 16, y - 90);
+    if (d > 5.6) continue;
+    let c = d > 4.6 ? C.TRIM : d > 3.6 ? ((x > 16 && y < 90) ? C.S3 : C.S1) : (bay(x, y) < 0.5 ? C.SK4 : C.SK3);
+    if (d <= 3.6 && x === 15 && y === 88) c = C.GLOW;
+    gset(x, y, c, L.HOUSE);
+  }
+  // venetian-blind window glowing from within
+  for (let x = 28; x <= 62; x++) { gset(x, 78, C.STUS, L.HOUSE); gset(x, 79, C.TRIM, L.HOUSE); gset(x, 105, x > 58 ? C.S3 : C.S2, L.HOUSE); }
+  for (let y = 80; y <= 104; y++) for (let x = 30; x <= 60; x++) {
+    let c;
+    if (x === 30 || x === 60 || y === 80 || y === 104) c = C.TRIM;
+    else if (x === 38 || x === 52) c = C.SK4;
+    else { const r = (y - 81) % 3; c = r === 0 ? C.SK4 : r === 1 ? C.GLOW : (bay(x, y) < 0.6 ? C.HOT : C.GLOW); }
+    gset(x, y, c, L.HOUSE);
+  }
+  // door, canopy, porch steps
+  for (let y = 93; y <= WALL_BASE; y++) for (let x = 70; x <= 81; x++) {
+    let c = C.TRIM;
+    if (x === 70 || x === 81) c = C.INK;
+    else if (y === 101 || y === 111) c = C.INK;
+    gset(x, y, c, L.HOUSE);
+  }
+  gset(75, 97, C.GLOW, L.HOUSE); gset(76, 97, C.GLOW, L.HOUSE); gset(75, 98, C.SK4, L.HOUSE); gset(76, 98, C.GLOW, L.HOUSE);
+  gset(79, 109, C.S3, L.HOUSE);
+  for (let x = 64; x <= 88; x++) { gset(x, 89, C.STUL, L.HOUSE); gset(x, 90, C.TRIM, L.HOUSE); }
+  for (let x = 66; x <= 88; x++) { gset(x, 123, C.ST2, L.PROP); gset(x, 124, C.ST1, L.PROP); gset(x, 125, C.INK, L.PROP); }
+  for (let x = 62; x <= 92; x++) { gset(x, 126, C.ST2, L.PROP); gset(x, 127, C.ST1, L.PROP); gset(x, 128, C.ST1, L.PROP); gset(x, 129, C.INK, L.PROP); }
+  // porch globe lamp on a bracket
+  gset(88, 99, C.INK, L.HOUSE); gset(89, 99, C.INK, L.HOUSE); gset(90, 98, C.INK, L.HOUSE);
+  // TV antenna + guy wire, vent stack
+  for (let y = 33; y < 62; y++) gset(24, y, C.INK, L.HOUSE);
+  for (let x = 18; x <= 30; x++) gset(x, 35, C.INK, L.HOUSE);
+  for (let x = 19; x <= 29; x += 2) gset(x, 39, C.INK, L.HOUSE);
+  for (let x = 20; x <= 28; x++) gset(x, 43, C.INK, L.HOUSE);
+  for (let k = 0; k < 20; k++) if (k & 1) gset(24 - Math.round(k * 0.6), 41 + k, C.INK, L.HOUSE);
+  gset(25, 35, C.SK4, L.HOUSE);
+  for (let y = 55; y < 62; y++) for (let x = 58; x <= 62; x++) gset(x, y, y === 55 ? C.STUL : C.TRIM, L.HOUSE);
+}
+function drawBedBox(bx, s) {
+  const top = BED_RIM - s, base = BED_BASE - s;
+  for (let x = bx; x < bx + BED_W; x++) {
+    gset(x, top, (x - bx) > BED_W - 7 && bay(x, 0) < 0.6 ? C.S3 : C.S2, L.BED);    // rolled rim
+    for (let y = top + 1; y < base; y++) {
+      const r = y - top, seam = ((x - bx) % 7) === 0;
+      let c = r < 2 ? C.S1 : C.S0;                                                  // darker gunmetal box
+      if (seam) c = C.INK;
+      if ((r === 1 || r === base - top - 1) && ((x - bx) % 7) === 3) c = C.S2;       // rivets
+      if (x === bx || x === bx + BED_W - 1) c = x === bx ? C.INK : C.S1;
+      gset(x, y, c, L.BED);
+    }
+    if (x - bx < 2 || x - bx > BED_W - 3) gset(x, base, C.INK, L.BED);             // feet
+  }
+}
+const MAXB = 40;
+const bloomX = new Int16Array(MAXB), bloomY = new Int16Array(MAXB), bloomK = new Uint8Array(MAXB), bloomBed = new Uint8Array(MAXB);
+const bloomPerk = new Float32Array(MAXB);
+let bloomN = 0;
+function addBloom(x, y, k, b) { bloomX[bloomN] = x; bloomY[bloomN] = y; bloomK[bloomN] = k; bloomBed[bloomN] = b; bloomN++; }
+function buildPlants(b) {
+  const bed = BEDS[b], bx = bed.x, s = slope(bx + 14), soilTop = BED_SOIL - s;
+  const leaf = (x, y, lit) => gset(x, y, lit ? C.F2 : (bay(x, y) < 0.3 ? C.F0 : C.F1), L.BED);
+  if (bed.kind === 0) {                                  // crimson roses
+    for (let k = 0; k < 4; k++) {
+      const cx = bx + 4 + k * 7;
+      for (let y = soilTop - 6; y < soilTop; y++) for (let x = cx - 3; x <= cx + 3; x++) {
+        const dx = (x - cx) / 3.4, dy = (y - (soilTop - 2.5)) / 3.6;
+        if (dx * dx + dy * dy < 1 && hash(x, y) > 0.08) leaf(x, y, dx > 0.2 && dy < -0.2);
+      }
+      addBloom(cx - 1, soilTop - 7, 0, b);
+      if (k !== 2) addBloom(cx + 2, soilTop - 5, k === 1 ? 1 : 0, b);
+    }
+  } else if (bed.kind === 1) {                           // marigolds
+    for (let x = bx + 2; x < bx + BED_W - 2; x++) {
+      const h = 3 + Math.round(pnoise(x / 3, 64, 5) * 2);
+      for (let y = soilTop - h; y < soilTop; y++) leaf(x, y, y === soilTop - h && x & 1);
+    }
+    for (let k = 0; k < 8; k++) addBloom(bx + 3 + k * 3 + (k & 1), soilTop - 5 - ((k * 5) % 3 === 0 ? 1 : 0), k === 3 ? 3 : 2, b);
+  } else {                                               // lavender + cream daisies
+    for (let k = 0; k < 6; k++) {
+      const x = bx + 2 + k * 2;
+      for (let y = soilTop - 5; y < soilTop; y++) gset(x, y, C.F1, L.BED);
+      gset(x + 1, soilTop - 1, C.F1, L.BED); gset(x - 1, soilTop - 2, C.F0, L.BED);
+      addBloom(x, soilTop - 9 + (k % 3 === 1 ? 1 : 0), 4, b);
+    }
+    for (let k = 0; k < 5; k++) {
+      const x = bx + 16 + k * 2 + (k & 1);
+      const h = 4 + (k % 2) * 2;
+      for (let y = soilTop - h; y < soilTop; y++) gset(x, y, C.F1, L.BED);
+      gset(x - 1, soilTop - 2, C.F2, L.BED);
+      addBloom(x, soilTop - h - 1, 5, b);
+    }
+  }
+}
+function buildProps() {
+  // lamp posts
+  for (let i = 1; i < LAMPS.length; i++) {
+    const lx = LAMPS[i].x, s = slope(lx), ly = LAMPS[i].y - s;
+    for (let y = ly + 3; y <= WALL_BASE - s; y++) gset(lx, y, C.INK, L.PROP);
+    gset(lx - 1, WALL_BASE - s, C.INK, L.PROP); gset(lx + 1, WALL_BASE - s, C.INK, L.PROP);
+    for (let x = lx - 2; x <= lx + 2; x++) { gset(x, ly - 3, C.INK, L.PROP); gset(x, ly + 3, C.INK, L.PROP); }
+    gset(lx, ly - 4, C.INK, L.PROP); gset(lx, ly - 5, C.SK4, L.PROP);
+    for (let y = ly - 2; y <= ly + 2; y++) { gset(lx - 2, y, C.INK, L.PROP); gset(lx + 2, y, C.INK, L.PROP); }
+  }
+  // copper standpipe with a brass pressure gauge and valve wheel
+  const px = PIPE_X, s = slope(px);
+  for (let y = 102 - s; y <= WALL_BASE - s; y++) { gset(px, y, C.SK4, L.PROP); gset(px + 1, y, C.SK3, L.PROP); gset(px + 2, y, C.SOILM, L.PROP); }
+  for (let x = px + 3; x <= px + 5; x++) { gset(x, 116 - s, C.SK3, L.PROP); gset(x, 117 - s, C.SOILM, L.PROP); }
+  gset(px + 5, 118 - s, C.SK3, L.PROP);
+  for (let a = 0; a < 16; a++) gset(px - 2 + Math.round(2.2 * Math.cos(a / 16 * TAU)), 110 - s + Math.round(2.2 * Math.sin(a / 16 * TAU)), C.S1, L.PROP);
+  gset(px - 2, 110 - s, C.MARI, L.PROP); gset(px - 1, 110 - s, C.S1, L.PROP);
+  for (let y = -3; y <= 3; y++) for (let x = -3; x <= 3; x++) {
+    const d = Math.hypot(x, y);
+    if (d > 3.2) continue;
+    gset(px + 1 + x, 99 - s + y, d > 2.2 ? (x > 0 && y < 0 ? C.PALEY : C.MARI) : C.CREAM, L.PROP);
+  }
+  gset(px + 1, 99 - s, C.INK, L.PROP); gset(px + 2, 98 - s, C.INK, L.PROP);
+  // glass cloches over seedlings
+  for (let i = 0; i < CLOCHES.length; i++) {
+    const cx = CLOCHES[i], sc = slope(cx), base = WALL_BASE - sc;
+    for (let y = base - 6; y <= base; y++) for (let x = cx - 3; x <= cx + 3; x++) {
+      const dx = (x - cx) / 3.5, dy = (y - base) / 6.5, d = dx * dx + dy * dy;
+      if (d > 1) continue;
+      let c = T;
+      if (d > 0.62) c = (x > cx && y < base - 3) ? C.S3 : C.S1;
+      else if (y >= base - 2 && hash(x, y) < 0.7) c = y === base - 2 ? C.F3 : C.F2;
+      else if (x === cx + 1 && y === base - 4) c = C.HAZE;
+      if (c !== T) gset(x, y, c, L.GLASS);
+    }
+    gset(cx, base - 7, C.S2, L.GLASS);
+  }
+  // art-deco urn with a clipped shrub at the terrace end
+  const ux = 430, us = slope(ux);
+  for (let y = 112 - us; y <= WALL_BASE - us; y++) {
+    const r = y - (112 - us), hw = r < 2 ? 5 : r < 7 ? 4 - (r > 4 ? 1 : 0) : 2;
+    for (let x = ux - hw; x <= ux + hw; x++) gset(x, y, x === ux + hw ? C.ST2 : (r < 2 ? C.ST2 : C.ST1), L.PROP);
+  }
+  for (let y = 100 - us; y < 112 - us; y++) for (let x = ux - 6; x <= ux + 6; x++) {
+    const dx = (x - ux) / 6, dy = (y - (106 - us)) / 6;
+    if (dx * dx + dy * dy < 1) gset(x, y, dx > 0.3 && dy < 0 ? C.F2 : (bay(x, y) < 0.4 ? C.F0 : C.F1), L.PROP);
+  }
+}
+// long cool shadows toward the camera, skewed away from the sun (static objects)
+const SHADOW_SKEW = -0.35;
+function castStatic(x0, x1, len, baseY) {
+  for (let r = 0; r < len; r++) {
+    const y = baseY + 1 + r, off = Math.round(r * SHADOW_SKEW), taper = r > len - 3 ? 0.5 : 1;
+    for (let x = x0 + off; x <= x1 + off; x++) if (taper === 1 || bay(x, y) < taper) gshade(x, y);
+  }
+}
+function buildShadows() {
+  for (let x = HOUSE_R + 1; x < 480; x++) {                                   // wall + railing
+    const s = slope(x);
+    for (let r = 0; r < 7; r++) if (r < 5 || bay(x, WALL_BASE + r) < (r === 5 ? 0.6 : 0.3)) gshade(x, WALL_BASE + 1 + r - s);
+  }
+  for (let x = 0; x <= HOUSE_R; x++) for (let r = 0; r < 3; r++) if (r < 2 || bay(x, r) < 0.5) gshade(x, WALL_BASE + 1 + r);
+  for (let b = 0; b < 3; b++) { const s = slope(BEDS[b].x + 14); castStatic(BEDS[b].x - 1, BEDS[b].x + BED_W - 2, 7, BED_BASE - s); }
+  for (let i = 1; i < LAMPS.length; i++) castStatic(LAMPS[i].x, LAMPS[i].x, 16, WALL_BASE - slope(LAMPS[i].x));
+  castStatic(PIPE_X, PIPE_X + 2, 11, WALL_BASE - slope(PIPE_X));
+  for (let i = 0; i < CLOCHES.length; i++) castStatic(CLOCHES[i] - 2, CLOCHES[i] + 2, 4, WALL_BASE - slope(CLOCHES[i]));
+  castStatic(425, 435, 8, WALL_BASE - slope(430));
+}
+function buildGarden() {
+  buildPath(); buildWall(); buildCottage();
+  for (let b = 0; b < 3; b++) { drawBedBox(BEDS[b].x, slope(BEDS[b].x + 14)); buildPlants(b); }
+  buildProps(); buildShadows();
+}
+
+// =================================================================== GARDEN: per-frame state and light
+const bedWet = new Float32Array(3 * BED_W);         // soil wetness per column, 0 dry .. 1 soaked
+const SOIL_RAMP = [C.SOILD, C.SOILM, C.SOILW, C.SOILW];
+const MAXWS = 48;
+const wsX = new Int16Array(MAXWS), wsY = new Int16Array(MAXWS), wsLife = new Float32Array(MAXWS);
+const WS_LIFE = 5.5;
+let wsNext = 0;
+function addWetSpot(x, y) {
+  // refresh an existing nearby spot instead of stacking
+  for (let i = 0; i < MAXWS; i++) if (wsLife[i] > 0 && Math.abs(wsX[i] - x) < 3 && wsY[i] === y) { wsLife[i] = WS_LIFE; return; }
+  wsX[wsNext] = x; wsY[wsNext] = y; wsLife[wsNext] = WS_LIFE; wsNext = (wsNext + 1) % MAXWS;
+}
+function lampFlicker(i, f) {             // percent
+  const seg = (f / 6) | 0;
+  return hash(seg, 300 + i) < 0.018 ? 55 : (hash(seg, 400 + i) < 0.03 ? 85 : 100);
+}
+
+function drawSoilAndBlooms(cx, cy) {
+  for (let b = 0; b < 3; b++) {
+    const bx = BEDS[b].x, s = slope(bx + 14);
+    for (let i = 1; i < BED_W - 1; i++) {
+      const w = bedWet[b * BED_W + i], lv = w * 2, base = Math.floor(lv), f = lv - base;
+      for (let r = 0; r < 2; r++) {
+        const wx = bx + i, wy = BED_SOIL - s + r, sx = wx - cx, sy = wy - cy + IY0;
+        let c = bay(sx, sy) < f ? SOIL_RAMP[base + 1] : SOIL_RAMP[base];
+        if (r === 0 && hash(wx, 17) < 0.2) c = SHD[c];                  // clods
+        if (r === 1) c = SHD[c] === 0 ? c : SHD[c];
+        pset(sx, sy, c, L.BED);
+      }
+    }
+  }
+  for (let i = 0; i < bloomN; i++) {
+    const x = bloomX[i] - cx, y = bloomY[i] - cy + IY0 - (bloomPerk[i] > 0 ? 1 : 0), k = bloomK[i];
+    if (k === 0) { pset(x, y, C.CRIM, L.BED); pset(x + 1, y, C.CORAL, L.BED); pset(x, y + 1, C.OX, L.BED); pset(x + 1, y + 1, C.CRIM, L.BED); }
+    else if (k === 1) { pset(x, y, C.CRIM, L.BED); pset(x, y + 1, C.OX, L.BED); }
+    else if (k === 2) { pset(x, y, C.MARI, L.BED); pset(x + 1, y, C.PALEY, L.BED); pset(x, y + 1, C.SK4, L.BED); pset(x + 1, y + 1, C.MARI, L.BED); }
+    else if (k === 3) { pset(x, y, C.CORAL, L.BED); pset(x + 1, y, C.CORAL, L.BED); pset(x, y + 1, C.SK4, L.BED); }
+    else if (k === 4) { pset(x, y, C.LAV, L.BED); pset(x, y + 1, C.LAV, L.BED); pset(x, y + 2, C.SK2, L.BED); pset(x, y + 3, C.LAV, L.BED); pset(x + 1, y + 1, C.SK2, L.BED); }
+    else { pset(x, y, C.PALEY, L.BED); pset(x - 1, y, C.CREAM, L.BED); pset(x + 1, y, C.CREAM, L.BED); pset(x, y - 1, C.CREAM, L.BED); pset(x, y + 1, C.CREAMS, L.BED); }
+  }
+}
+
+// stucco under lamp light keeps its own ramp (dark stucco -> cool -> lit -> cream)
+const HLIT = makeMap([23, 39, 39, 38, 38, 37, 37, 8, 40, 23, 1, 40, 29, 30, 30, 31, 22, 23, 52, 8]);
+// ground under lamp light: warm grey first, burnt amber only in the core
+const GLIT = makeMap([1, 22, 22, 23, 23, 24, 24, 6, 18, 19, 19, 20, 20, 21, 21, 35, 27, 26, 26, 25, 25, 6,
+  28, 29, 29, 30, 30, 31, 40, 39, 32, 33, 34, 35, 36, 37]);
+// dithered elliptical pool: solid-ish core, short dithered falloff; two steps in the core
+function lightPool(cx, cy, rx, ry, pct, mask, map) {
+  const strength = pct / 100;          // integer percent keeps call arguments as small ints
+  const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx), y0 = Math.floor(cy - ry), y1 = Math.ceil(cy + ry);
+  for (let y = Math.max(IY0, y0); y <= Math.min(IY1 - 1, y1); y++) {
+    const dy = (y - cy) / ry;
+    for (let x = Math.max(0, x0); x <= Math.min(W - 1, x1); x++) {
+      const dx = (x - cx) / rx, d = Math.sqrt(dx * dx + dy * dy);
+      if (d >= 1) continue;
+      const i = y * W + x;
+      if (!(mask & (1 << lid[i]))) continue;
+      const th = bay(x, y), k = 1 - d;
+      if (th < clamp((k - 0.3) * 3.2, 0, 1) * strength) fb[i] = map[fb[i]];
+      if (d < 0.3 && th < clamp((0.3 - d) * 8, 0, 1) * strength) fb[i] = map[fb[i]];
+    }
+  }
+}
+function drawLamps(tick, cx, cy) {
+  const t = tick / FPS;
+  for (let i = 0; i < LAMPS.length; i++) {
+    const lp = LAMPS[i], s = lp.porch ? 0 : slope(lp.x), fl = lampFlicker(i, tick), f = fl / 100;
+    const bx = lp.x - cx, by = lp.y - s - cy + IY0;
+    if (bx < -40 || bx > W + 40) continue;
+    const gy = (lp.porch ? 128 : WALL_BASE + 5 - s) - cy + IY0;
+    lightPool(bx, gy, lp.porch ? 24 : 26, 8, fl, M_GROUNDISH | (1 << L.GLASS), GLIT);
+    if (lp.porch) lightPool(bx - 4, by + 3, 15, 14, (fl * 85 / 100) | 0, 1 << L.HOUSE, HLIT);
+    else lightPool(bx, by + 14, 10, 16, (fl * 60 / 100) | 0, M_GROUNDISH | (1 << L.GLASS), GLIT);
+    // halo around the bulb (any layer)
+    lightPool(bx, by, 7, 6, fl >> 1, M_ALL & ~(1 << L.HOUSE), LIT);
+    // bulb
+    if (lp.porch) {
+      for (let y = -2; y <= 2; y++) for (let x = -2; x <= 2; x++) {
+        const d = x * x + y * y;
+        if (d > 5) continue;
+        pset(bx + x, by + y, d <= 1 ? (f < 0.7 ? C.GLOW : C.HOT) : (y >= 1 && x <= 0 ? C.SK4 : C.GLOW), L.PROP);
+      }
+    } else {
+      for (let y = -2; y <= 2; y++) { pset(bx - 1, by + y, C.GLOW, L.PROP); pset(bx + 1, by + y, y > 0 ? C.SK4 : C.GLOW, L.PROP); pset(bx, by + y, f < 0.7 ? C.GLOW : C.HOT, L.PROP); }
+    }
+    // wet-stone reflection streak below the lamp
+    const ry0 = (lp.porch ? 131 : PATH_TOP + 3 - s) - cy + IY0, sh = tick >> 3;
+    for (let r = 0; r < 13; r++) {
+      const y = ry0 + r, k = 1 - r / 13;
+      for (let dx = -1; dx <= 1; dx++) {
+        const x = bx + dx, h = hash(x * 5 + r, sh);
+        if (x < 0 || x >= W || y < IY0 || y >= IY1) continue;
+        const idx = y * W + x;
+        if (lid[idx] !== L.GROUND) continue;
+        const dens = (dx === 0 ? 0.55 : 0.18) * k * f;
+        if (h < dens) fb[idx] = r < 4 && dx === 0 ? C.GLOW : C.SK4;
+      }
+    }
+  }
+  // cottage window spill on the wall below the sill, antenna light
+  if (frac(27 * t / LOOP_S + 0.3) < 0.16) pset(24 - cx, 32 - cy + IY0, C.RED, L.HOUSE);
+  else pset(24 - cx, 32 - cy + IY0, C.OX, L.HOUSE);
+}
+function drawWetSpots(cx, cy) {
+  for (let i = 0; i < MAXWS; i++) {
+    const l = wsLife[i];
+    if (l <= 0) continue;
+    const u = l / WS_LIFE, x = wsX[i] - cx, y = wsY[i] - cy + IY0;
+    const w = u > 0.55 ? 2 : u > 0.25 ? 1 : 0;
+    for (let dx = -w; dx <= w; dx++) {
+      if (u < 0.25 && bay(x + dx, y) > u * 3) continue;
+      premap(x + dx, y, SHD, 1 << L.GROUND);
+      if (u > 0.7 && dx !== -w && dx !== w) premap(x + dx, y + 1, SHD, 1 << L.GROUND);
+    }
+    if (u > 0.3) pset(x + (u > 0.6 ? 1 : 0), y, u > 0.6 ? C.GLOW : C.SK4, L.GROUND);   // amber glint
+  }
+}
+// venetian-blind light: hard amber slats thrown across the path, planters, wall and figures
+const SLAT_U0 = 60, SLAT_P = 17, SLAT_W = 8, SLAT_N = 5, SLAT_SKEW = 0.9;
+function drawSlats(cx, cy) {
+  const ySt = Math.max(IY0, 103 - cy + IY0), yEn = Math.min(IY1 - 1, 147 - cy + IY0);
+  const xSt = Math.max(0, SLAT_U0 - cx - 10), xEn = Math.min(W - 1, SLAT_U0 + SLAT_P * SLAT_N + 45 - cx);
+  for (let y = ySt; y <= yEn; y++) {
+    const wy = y - IY0 + cy;
+    for (let x = xSt; x <= xEn; x++) {
+      const i = y * W + x;
+      if (!(M_LIT & (1 << lid[i])) || lid[i] === L.HOUSE) continue;
+      // slat coordinate along the projected blind, inline (no per-pixel call)
+      const u = x + cx - SLAT_SKEW * (wy - PATH_TOP) - SLAT_U0;
+      if (u < 0 || u >= SLAT_P * SLAT_N) continue;
+      const idx = Math.floor(u / SLAT_P), w = u - idx * SLAT_P;
+      if (w >= SLAT_W) continue;
+      let k = (w < 1 || w >= SLAT_W - 1) ? 0.5 : 1;               // 1px dithered edges
+      if (idx === SLAT_N - 1) k *= 0.55;                          // far slat fades
+      if (wy < 109) k *= (wy - 102) / 7;                          // top of the beam softens
+      if (bay(x, y) < k) fb[i] = LIT[fb[i]];
+    }
+  }
+}
+
+// =================================================================== STATE MACHINE TIMELINE
+const S = { IDLE: 0, WALK: 1, LIFT: 2, POUR: 3, SETTLE: 4 };
+// [state, t0, t1, x0, x1, bed, final]
+const SEGS = [
+  [S.IDLE, 0.0, 5.0, STEP_X, STEP_X, -1, 0],
+  [S.WALK, 5.0, 8.6, STEP_X, STAND[0], -1, 0],
+  [S.LIFT, 8.6, 9.6, STAND[0], STAND[0], 0, 0],
+  [S.POUR, 9.6, 13.2, STAND[0], STAND[0], 0, 0],
+  [S.SETTLE, 13.2, 16.2, STAND[0], STAND[0], 0, 0],
+  [S.WALK, 16.2, 19.7, STAND[0], STAND[1], -1, 0],
+  [S.LIFT, 19.7, 20.7, STAND[1], STAND[1], 1, 0],
+  [S.POUR, 20.7, 24.3, STAND[1], STAND[1], 1, 0],
+  [S.SETTLE, 24.3, 27.3, STAND[1], STAND[1], 1, 0],
+  [S.WALK, 27.3, 30.8, STAND[1], STAND[2], -1, 0],
+  [S.LIFT, 30.8, 31.8, STAND[2], STAND[2], 2, 0],
+  [S.POUR, 31.8, 35.4, STAND[2], STAND[2], 2, 0],
+  [S.SETTLE, 35.4, 42.4, STAND[2], STAND[2], 2, 1],
+  [S.WALK, 42.4, 53.0, STAND[2], STEP_X, -1, 0],
+  [S.IDLE, 53.0, LOOP_S, STEP_X, STEP_X, -1, 0]
+];
+// facing changes: [time, new facing]
+const TURNS = [[1.5, 1], [8.65, -1], [15.9, 1], [19.75, -1], [27.0, 1], [30.85, -1], [36.4, 1], [42.05, -1]];
+const AIRCAR_T0 = 36.6, AIRCAR_T1 = 42.2, ROBOT_HAPPY_T = 36.1;
+const STRIDE_PX = 18;                // one full walk cycle (two steps)
+
+function pose() {
+  return { x: STEP_X, face: -1, state: 0, seg: 0, u: 0, walking: 0, speed: 0, phase: 0, arm: 0, tilt: 0,
+           head: 0, hem: 0, scarf: 0, hair: 0, pourX: 0, pouring: 0, bed: -1, gaze: 0, final: 0, turnAge: 9 };
+}
+function faceAt(t) {
+  let f = -1;
+  for (let i = 0; i < TURNS.length; i++) if (t >= TURNS[i][0]) f = TURNS[i][1];
+  return f;
+}
+// evaluate every pose parameter at loop time t (no allocation: writes into out)
+function evalPose(fr, out) {
+  const t = fr / FPS;
+  let si = 0;
+  while (si < SEGS.length - 1 && t >= SEGS[si][2]) si++;
+  const sg = SEGS[si], st = sg[0], u = clamp((t - sg[1]) / (sg[2] - sg[1]), 0, 1), dur = sg[2] - sg[1];
+  out.state = st; out.seg = si; out.u = u; out.bed = sg[5]; out.final = sg[6];
+  out.face = faceAt(t);
+  let age = t + (LOOP_S - TURNS[TURNS.length - 1][0]);           // time since the last turn (wraps)
+  for (let k = 0; k < TURNS.length; k++) if (t >= TURNS[k][0]) age = t - TURNS[k][0];
+  out.turnAge = age;
+  out.walking = 0; out.speed = 0; out.arm = 0; out.tilt = 0; out.head = 0; out.pouring = 0; out.gaze = 0;
+  out.x = sg[3];
+  let walkDist = 0;
+  if (st === S.WALK) {
+    const a = 0.14, vmax = 1 / (1 - a), r1 = 1 - u;               // trapezoid velocity profile
+    const e = u < a ? 0.5 * vmax * u * u / a : u < 1 - a ? vmax * (u - a / 2) : 1 - 0.5 * vmax * r1 * r1 / a;
+    out.x = lerp(sg[3], sg[4], e);
+    walkDist = Math.abs(out.x - sg[3]);
+    const v = (u < a ? u / a : u > 1 - a ? (1 - u) / a : 1);
+    out.walking = 1; out.speed = v * Math.abs(sg[4] - sg[3]) / (dur * (1 - a));
+  } else if (st === S.LIFT) {
+    out.head = -0.7 * smooth(u / 0.45);
+    out.arm = smooth((u - 0.2) / 0.8);
+    out.tilt = 0.2 * smooth((u - 0.5) / 0.5);
+    out.gaze = 1;
+  } else if (st === S.POUR) {
+    const sw = 0.5 - 0.5 * Math.cos(TAU * 0.75 * smooth(u * 1.08));
+    out.arm = 1 + 0.35 * sw;
+    out.tilt = Math.min(0.2 + 0.8 * smooth(u / 0.1), 1 - 0.8 * smooth((u - 0.9) / 0.1));
+    out.head = -0.8 - 0.2 * sw;
+    out.pouring = out.tilt > 0.55 ? 1 : 0;
+    const bx = BEDS[sg[5]].x, near = bx + BED_W - 6, far = bx + 3;
+    out.pourX = lerp(near, far, sw);
+    out.gaze = 1;
+  } else if (st === S.SETTLE) {
+    if (!sg[6]) {
+      out.arm = 1 - smooth(u / 0.25);
+      out.tilt = 0.2 * (1 - smooth(u / 0.12));
+      out.head = u < 0.3 ? lerp(-0.8, 0, smooth((u - 0.08) / 0.22))
+               : u < 0.8 ? 0.9 * smooth((u - 0.36) / 0.14) : 0.9 * (1 - smooth((u - 0.8) / 0.1));
+      out.gaze = (u > 0.35 && u < 0.85) ? 2 : 0;
+    } else {
+      out.arm = 1 - smooth(u / 0.1);
+      out.tilt = 0.2 * (1 - smooth(u / 0.06));
+      out.head = u < 0.14 ? lerp(-0.8, 0, smooth(u / 0.1))
+               : u < 0.86 ? 0.95 * smooth((u - 0.17) / 0.09) : 0.95 * (1 - smooth((u - 0.86) / 0.06));
+      out.gaze = (u > 0.16 && u < 0.9) ? 3 : 0;
+    }
+  }
+  // walk cycle phase from distance travelled (legs together at phase 0)
+  out.phase = frac(walkDist / STRIDE_PX);
+  // secondary motion: skirt hem, scarf tails, loose hair strands
+  const ta = out.turnAge, kick = Math.exp(-ta * 2.6) * Math.cos(ta * 8.5);
+  const breeze = 0.5 * osc(12, t, 0) + 0.3 * osc(30, t, 0.2);
+  out.hem = out.walking * 0.9 * Math.sin(TAU * out.phase * 2 - 0.9) * Math.min(1, out.speed / 12) - 1.3 * kick + 0.35 * breeze;
+  out.scarf = 0.8 * osc(36, t, 0.1) + 0.45 * osc(90, t, 0.4) + out.walking * 0.8 + breeze * 0.5;
+  out.hair = 0.7 * osc(45, t, 0.6) + 0.5 * osc(108, t, 0.1) + out.walking * 0.5;
+  return out;
+}
+
+// =================================================================== CAMERA PATH
+// keyframes: [time, mode(0 fixed, 1 follow), x, y]; blended with smootherstep, then circularly smoothed
+const CAM_KEYS = [
+  [0.0, 0, 160, 0], [4.6, 0, 116, 0], [8.4, 1, 0, 16], [9.9, 0, 0, 12], [13.0, 0, 0, 12],
+  [16.2, 1, 0, 16], [19.9, 1, 0, 16], [21.0, 0, 18, 12], [24.2, 0, 18, 12], [27.2, 1, 0, 16],
+  [30.9, 1, 0, 16], [32.1, 0, 88, 12], [35.3, 0, 88, 12], [37.0, 0, 160, 8], [42.2, 0, 160, 8],
+  [44.8, 1, 0, 16], [47.0, 1, 0, 16], [51.6, 0, 160, 0], [LOOP_S, 0, 160, 0]
+];
+const camPathX = new Float32Array(LOOP_F), camPathY = new Float32Array(LOOP_F);
+const camFaceSm = new Float32Array(LOOP_F);
+function buildCameraPath() {
+  const tmp = pose();
+  const hx = new Float32Array(LOOP_F);
+  for (let f = 0; f < LOOP_F; f++) { evalPose(f, tmp); hx[f] = tmp.x; camFaceSm[f] = tmp.face; }
+  circularBlur(camFaceSm, 45, 2);
+  const follow = (f, axis) => axis ? 16 : hx[f] - lerp(213, 107, (camFaceSm[f] + 1) / 2);
+  for (let f = 0; f < LOOP_F; f++) {
+    const t = f / FPS;
+    let k = 0; while (k < CAM_KEYS.length - 2 && t >= CAM_KEYS[k + 1][0]) k++;
+    const A = CAM_KEYS[k], B = CAM_KEYS[k + 1], w = smoother((t - A[0]) / (B[0] - A[0]));
+    const ax = A[1] ? follow(f, 0) : A[2], ay = A[1] ? follow(f, 1) : A[3];
+    const bx = B[1] ? follow(f, 0) : B[2], by = B[1] ? follow(f, 1) : B[3];
+    camPathX[f] = clamp(lerp(ax, bx, w), 0, CAM_MAX_X);
+    camPathY[f] = clamp(lerp(ay, by, w), 0, CAM_MAX_Y);
+  }
+  circularBlur(camPathX, 28, 3); circularBlur(camPathY, 28, 3);
+}
+function circularBlur(a, r, passes) {
+  const n = a.length, tmp = new Float32Array(n);
+  for (let p = 0; p < passes; p++) {
+    let sum = 0;
+    for (let k = -r; k <= r; k++) sum += a[(k + n) % n];
+    for (let i = 0; i < n; i++) {
+      tmp[i] = sum / (2 * r + 1);
+      sum += a[(i + r + 1) % n] - a[(i - r + n) % n];
+    }
+    a.set(tmp);
+  }
+}
+
+// =================================================================== THE WOMAN (procedural sprite)
+const SPR_W = 44, SPR_H = 40, AX = 16, AY = 36;          // anchor = shoe sole under the body centre
+const spr = new Uint8Array(SPR_W * SPR_H);              // built facing right
+const sprOut = new Uint8Array(SPR_W * SPR_H);           // flipped + rim-lit, screen oriented
+const herSpout = { x: 0, y: 0 };                        // spout rose, sprite-local (facing right)
+let herFace = 1, herX = STEP_X, herFeet = FEET;
+
+function sp(x, y, c) {                                  // x,y relative to anchor
+  const sx = x + AX, sy = y + AY;
+  if (sx < 0 || sy < 0 || sx >= SPR_W || sy >= SPR_H) return;
+  spr[sy * SPR_W + sx] = c;
+}
+function spLine(x0, y0, x1, y1, c0, c1, split) {
+  const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1);
+  for (let i = 0; i <= n; i++) sp(Math.round(lerp(x0, x1, i / n)), Math.round(lerp(y0, y1, i / n)), i <= split ? c0 : c1);
+}
+// head bitmap facing right, columns -3..3, rows -28..-22 (level head)
+// C cream  c cream-shadow  h hair-lit  H hair-dark  S skin-mid  s skin-shadow  K eye  k knot  n neck
+const HEAD = [
+  '.CCCC..',
+  'CCCCCh.',
+  'cCCChS.',
+  'ccCHKSS',
+  'kccHSS.',
+  '...HSs.',
+  '....n..'
+];
+const HEAD_COL = { C: C.CREAM, c: C.CREAMS, h: C.HAIRL, H: C.HAIRD, S: C.SKM, s: C.SKS, K: C.HAIRD, k: C.CREAM, n: C.SKS };
+const HEAD_PX = [];     // [dx, dy, colour] precomputed
+const SKIRT_B = [-2, -3, -4, -5, -5, -6, -6, -6, -7, -6], SKIRT_F = [1, 2, 3, 3, 4, 4, 5, 5, 5, 5];
+for (let r = 0; r < HEAD.length; r++) for (let c = 0; c < 7; c++) {
+  const ch = HEAD[r][c];
+  if (ch !== '.') HEAD_PX.push([c - 3, r - 28, HEAD_COL[ch]]);
+}
+
+// chrome watering can, rasterised analytically in can space (origin = gripped handle)
+function inCan(u, v) {
+  // returns palette index or T
+  const tf = u > 0.6;
+  const ax = tf ? 3.1 : 4.3, by = 2.25 * (tf ? 1 : 1 - 0.32 * (0.6 - u) / 4.3);
+  const du = (u - 0.6) / ax, dv = (v - 3.4) / by;
+  if (du * du + dv * dv <= 1) return v < 2.0 ? C.S3 : v < 3.5 ? C.S2 : v < 4.7 ? C.S1 : C.S0;
+  // tapered spout
+  const sx0 = 3.0, sy0 = 4.4, sx1 = 9.2, sy1 = 0.9;
+  const ex = sx1 - sx0, ey = sy1 - sy0, L2 = ex * ex + ey * ey;
+  const s = clamp(((u - sx0) * ex + (v - sy0) * ey) / L2, 0, 1);
+  const px = sx0 + ex * s - u, py = sy0 + ey * s - v;
+  if (px * px + py * py <= Math.pow(lerp(0.78, 0.5, s), 2)) return py < 0 ? C.S1 : C.S2;
+  // rose head
+  const rx = u - 9.8, ry = v - 0.5;
+  if (rx * rx + ry * ry <= 1.3) return rx + ry < 0 ? C.S3 : C.S1;
+  // top handle loop
+  const hx = u - 0.2, hy = v - 2.4, hr = Math.sqrt(hx * hx + hy * hy);
+  if (v < 2.3 && hr >= 1.9 && hr <= 2.85) return C.S1;
+  return T;
+}
+function drawCan(hx, hy, ang) {
+  const ca = Math.cos(ang), sa = Math.sin(ang);
+  for (let y = hy - 4; y <= hy + 11; y++) for (let x = hx - 6; x <= hx + 13; x++) {
+    const dx = x - hx, dy = y - hy;                     // inverse rotate into can space
+    const u = dx * ca + dy * sa, v = -dx * sa + dy * ca;
+    const c = inCan(u, v);
+    if (c !== T) sp(x, y, c);
+  }
+  // one warm sunset specular, one cool sky pixel
+  sp(Math.round(hx + 2.2 * ca - 2.3 * sa), Math.round(hy + 2.2 * sa + 2.3 * ca), C.GLOW);
+  sp(Math.round(hx - 1.6 * ca - 2.6 * sa), Math.round(hy - 1.6 * sa + 2.6 * ca), C.HAZE);
+  herSpout.x = hx + 10.3 * ca - 0.4 * sa; herSpout.y = hy + 10.3 * sa + 0.4 * ca;
+}
+
+function buildHer(p) {
+  spr.fill(T);
+  const walking = p.walking, ph = p.phase;
+  const swing = walking ? Math.sin(TAU * ph) : 0;
+  const bob = walking && Math.abs(swing) > 0.7 ? 1 : 0;
+  const headQ = p.head > 0.45 ? 1 : p.head < -0.45 ? -1 : 0;
+  // ---- far arm (behind the body, swings opposite)
+  if (walking) { const fx = Math.round(-1.5 * swing); sp(fx - 1, -15 + bob, C.SKS); sp(fx - 1, -16 + bob, C.SKS); }
+  // ---- legs and low pumps
+  for (let leg = 0; leg < 2; leg++) {
+    const lp = ph + (leg ? 0.5 : 0);
+    const o = walking ? 3.4 * Math.sin(TAU * lp) : (leg ? -1 : 1);
+    const lift = walking && Math.cos(TAU * lp) > 0.45 ? 1 : 0;
+    const fx = Math.round(o), col = leg ? C.SKS : C.SKM;
+    for (let y = -7; y <= -2; y++) sp(Math.round(lerp(leg ? -0.5 : 0.5, fx, (y + 8) / 6)), y - lift, col);
+    sp(fx, -1 - lift, col);
+    sp(fx - 1, 0 - lift, C.INK); sp(fx, 0 - lift, leg ? C.INK : C.S1); sp(fx + 1, 0 - lift, C.INK); sp(fx + 1, -1 - lift, C.TRIM);   // patent glint
+  }
+  // ---- full swing skirt: bell silhouette from the belted waist (-15) to the tea-length hem (-6)
+  const hemS = p.hem;
+  for (let r = 0; r <= 9; r++) {
+    const y = -15 + bob + r;
+    const sh = r >= 5 ? Math.round(hemS * (r - 4) / 5) : 0;
+    const xb = SKIRT_B[r] + sh, xf = SKIRT_F[r] + sh + (walking && r > 5 && swing > 0.3 ? 1 : 0);
+    for (let x = xb; x <= xf; x++) {
+      let c = C.CRIM;
+      if (x <= xb + 1) c = C.OX;
+      else if (r >= 3 && r < 9 && (x === -3 + (sh >> 1) || x === 1 + sh)) c = C.OX;              // soft folds
+      if (r === 9) c = (x === xb || x === xf) ? C.OX : C.PLUM;                                    // hem shadow
+      sp(x, y, c);
+    }
+    // short cream half-apron on the front
+    if (r <= 5) for (let x = xf - (r < 2 ? 1 : 2); x <= xf; x++) sp(x, y, r === 5 ? C.CREAMS : (x === xf && r < 4 ? C.CREAM : (r > 2 ? C.CREAMS : C.CREAM)));
+  }
+  // apron ties at the back of the waist
+  sp(-3, -15 + bob, C.CREAM); sp(-4, -14 + bob, C.CREAMS);
+  // ---- belt, fitted bodice, shoulders
+  for (let x = -2; x <= 1; x++) sp(x, -16 + bob, x === 1 ? C.S2 : C.PLUM);
+  for (let y = -21; y <= -17; y++) {
+    const xf = (y === -19 || y === -20) ? 2 : 1;
+    for (let x = -2; x <= xf; x++) sp(x, y + bob, x === -2 ? C.OX : C.CRIM);
+  }
+  sp(-1, -22 + bob, C.CRIM); sp(0, -22 + bob, C.CRIM);
+  // ---- head with tilt (front columns move with the gaze)
+  for (let i = 0; i < HEAD_PX.length; i++) {
+    const hp = HEAD_PX[i];
+    const dy = hp[0] >= 1 ? -headQ : 0;                // face tips up or down
+    const dx = headQ < 0 && hp[1] < -23 ? 1 : 0;        // bowed head leans forward
+    sp(hp[0] + dx, hp[1] + bob + dy, hp[2]);
+  }
+  if (headQ > 0) sp(1, -22 + bob, C.SKS);            // throat shows when she looks up
+  // scarf tails at the nape, fluttering; loose strands of auburn hair
+  const s = p.scarf, ta = s > 0.6 ? 1 : 0, tb = s > 1.3 ? 1 : (s < -0.6 ? -1 : 0);
+  sp(-4, -24 + bob, C.CREAMS); sp(-5 - ta, -23 + bob - ta, C.CREAM);                 // upper tail lifts in the breeze
+  sp(-4, -23 + bob, C.CREAM); sp(-4 - (tb > 0 ? 1 : 0), -22 + bob, C.CREAMS);        // lower tail
+  if (tb < 0) sp(-3, -22 + bob, C.CREAMS);
+  const hs = p.hair;
+  if (hs > 0.2) sp(-2, -22 + bob, C.HAIRL);
+  if (hs > 0.9) sp(-3, -21 + bob, C.HAIRL);
+  if (hs < -0.3 || hs > 1.1) sp(3 + (headQ < 0 ? 1 : 0), -27 + bob - (headQ > 0 ? 1 : 0), C.HAIRL);
+  // ---- near arm + gloved hand + chrome can
+  const arm = p.arm;
+  const reach = Math.max(0, arm - 1);
+  let hx = lerp(1, 5, Math.min(arm, 1)) + reach * 6, hy = lerp(-14, -20, Math.min(arm, 1)) - reach * 2;
+  if (walking) hx += Math.round(0.9 * Math.sin(TAU * ph + Math.PI));
+  hx = Math.round(hx); hy = Math.round(hy) + bob;
+  const shx = 0, shy = -21 + bob;
+  const ex = Math.round((shx + hx) / 2 - (arm > 0.5 ? 0 : 1)), ey = Math.round((shy + hy) / 2 + (arm > 0.5 ? 1 : 0));
+  spLine(shx, shy, ex, ey, C.CRIM, C.SKM, 1);
+  spLine(ex, ey, hx, hy, C.SKM, C.SKM, 99);
+  const canAng = walking ? 0.1 * Math.sin(TAU * ph - 1.2) : (p.tilt * 0.62);
+  drawCan(hx, hy, canAng);
+  sp(hx, hy, C.CREAM); sp(hx - 1, hy, C.CREAMS); sp(hx, hy - 1, C.CREAM);  // glove over the grip
+}
+function sprEmpty(x, y) { return x < 0 || y < 0 || x >= SPR_W || y >= SPR_H || spr[y * SPR_W + x] === T; }
+// flip to facing and add the 1px hot rim toward the sun's on-screen position
+function finishHer(face, sunDx, sunDy) {
+  const sdx = sunDx > 3 ? 1 : sunDx < -3 ? -1 : 0;
+  for (let y = 0; y < SPR_H; y++) for (let x = 0; x < SPR_W; x++) {
+    const sx = face > 0 ? x : SPR_W - 1 - x;
+    sprOut[y * SPR_W + x] = spr[y * SPR_W + sx];
+  }
+  // rim pass on the oriented sprite (write into spr as scratch to avoid read-after-write)
+  for (let i = 0; i < spr.length; i++) spr[i] = sprOut[i];
+  for (let y = 0; y < SPR_H; y++) for (let x = 0; x < SPR_W; x++) {
+    const i = y * SPR_W + x, c = spr[i];
+    if (c === T || c === C.INK) continue;
+    let rim = false;
+    const ax = face > 0 ? AX : SPR_W - 1 - AX;
+    if (sdx !== 0 && sprEmpty(x + sdx, y)) rim = true;
+    else if (sunDy < 0 && sprEmpty(x, y - 1) && (sdx === 0 || (x - ax) * sdx >= 0)) rim = true;
+    if (!rim || y >= AY - 6 || c === C.HAIRD) continue;          // legs, pumps and the eye stay in shadow
+    sprOut[i] = (c === C.SKM || c === C.SKS) ? C.SKL : C.RIM;
+  }
+}
+
+// =================================================================== COMPANION ROBOT
+const RB_W = 18, RB_H = 20, RAX = 7, RAY = 18;
+const rbSpr = new Uint8Array(RB_W * RB_H);
+const RB_LAG_F = 21, RB_LAG = RB_LAG_F / FPS, RB_GAP = 15, RB_LANE = 5;          // follows her pose 0.35 s late, 15 px behind, 5 px downstage
+const rb = { x: STEP_X + RB_GAP, v: 0, face: -1, moving: 0, tread: 0, ex: 0, ey: 0, bounce: 0 };
+const rbPose = pose();
+
+function rbp(x, y, c) {
+  const sx = x + RAX, sy = y + RAY;
+  if (sx < 0 || sy < 0 || sx >= RB_W || sy >= RB_H) return;
+  rbSpr[sy * RB_W + sx] = c;
+}
+function lastWalkDir(t) {
+  // direction of the most recent WALK segment that has started (wraps to the final walk home)
+  let d = -1;
+  for (let i = 0; i < SEGS.length; i++) if (SEGS[i][0] === S.WALK && t >= SEGS[i][1]) d = SEGS[i][4] > SEGS[i][3] ? 1 : -1;
+  return d;
+}
+function robotReset() { rb.x = STEP_X + RB_GAP; rb.v = 0; rb.face = -1; rb.moving = 0; rb.tread = 0; }
+// fixed-step follower: trails her delayed state, stops when she stops
+function robotUpdate(f, carSx, camX) {
+  const t = f / FPS;
+  let fd = f - RB_LAG_F; if (fd < 0) fd += LOOP_F;
+  const td = fd / FPS;
+  evalPose(fd, rbPose);
+  const dir = lastWalkDir(td);
+  const target = rbPose.x - dir * RB_GAP;
+  const err = target - rb.x;
+  let want = 0;
+  if (Math.abs(err) > 1.2) want = clamp(err * 3.2, -26, 26);
+  rb.v += (want - rb.v) * 0.12;
+  if (Math.abs(rb.v) < 0.4 && want === 0) rb.v = 0;
+  rb.x += rb.v * DT;
+  rb.moving = Math.abs(rb.v) > 2 ? 1 : 0;
+  if (rb.moving) { rb.face = rb.v > 0 ? 1 : -1; rb.tread += Math.abs(rb.v) * DT; }
+  // eye / attention follows whatever she is looking at
+  const g = rbPose.gaze;
+  if (g === 3 && carSx > -60 && carSx < W + 60) {
+    const rsx = rb.x - camX;
+    rb.face = carSx > rsx ? 1 : -1; rb.ex = Math.abs(carSx - rsx) > 12 ? 1 : 0; rb.ey = -1;
+  } else if (g === 2) { rb.ex = 1; rb.ey = -1; }
+  else if (g === 1 && rbPose.bed >= 0) {
+    const bc = BEDS[rbPose.bed].x + BED_W / 2;
+    if (!rb.moving) rb.face = bc > rb.x ? 1 : -1;
+    rb.ex = 1; rb.ey = 0;
+  } else if (!rb.moving) { rb.face = rbPose.x > rb.x ? 1 : -1; rb.ex = 1; rb.ey = -1; }
+  else { rb.ex = 1; rb.ey = 0; }
+  const hb = t - (ROBOT_HAPPY_T + RB_LAG);
+  rb.bounce = (hb > 0 && hb < 0.17) || (hb > 0.34 && hb < 0.5) ? 1 : 0;
+}
+function buildRobot(f) {
+  const t = f / FPS;
+  rbSpr.fill(T);
+  const b = -rb.bounce;
+  // treads (hub pixels roll with distance travelled)
+  for (let x = -3; x <= 3; x++) { rbp(x, 0, C.INK); rbp(x, -2 + b * 0, C.INK); }
+  rbp(-4, -1, C.INK); rbp(4, -1, C.INK);
+  const tp = Math.floor(rb.tread / 1.5) % 3;
+  for (let x = -3; x <= 3; x++) rbp(x, -1, ((x + 3 + tp) % 3) === 0 ? C.S1 : C.S0);
+  // boxy riveted body
+  for (let y = -8; y <= -3; y++) for (let x = -3; x <= 3; x++) {
+    let c = x >= 1 ? C.S2 : C.S1;
+    if (x === -3 || y === -3) c = C.S0;
+    if (y === -8) c = C.S2;
+    if (x === 0 && y > -8) c = C.S0;                                      // panel seam
+    if ((x === -2 || x === 2) && (y === -7 || y === -4)) c = x > 0 ? C.S3 : C.S2;   // rivets
+    rbp(x, y + b, c);
+  }
+  // pincer arms cradling a tray of seedlings
+  rbp(4, -5 + b, C.S2); rbp(5, -6 + b, C.S2);
+  for (let x = 4; x <= 9; x++) rbp(x, -7 + b, C.S1);
+  rbp(4, -6 + b, C.S1); rbp(9, -6 + b, C.S2);
+  rbp(5, -8 + b, C.F2); rbp(7, -8 + b, C.F2); rbp(8, -9 + b, C.F3); rbp(6, -9 + b, C.F3); rbp(6, -8 + b, C.F1);
+  // neck and domed head
+  rbp(0, -9 + b, C.S0); rbp(-1, -9 + b, C.S0);
+  for (let x = -2; x <= 2; x++) { rbp(x, -10 + b, x < 0 ? C.S1 : C.S2); rbp(x, -11 + b, x < -1 ? C.S1 : C.S2); }
+  for (let x = -1; x <= 1; x++) rbp(x, -12 + b, x > 0 ? C.S3 : C.S2);
+  // single round amber lens, turned toward her attention
+  const ex = rb.ex, ey = rb.ey;
+  rbp(ex, -11 + ey + b, C.GLOW); rbp(ex + 1, -11 + ey + b, C.HOT);
+  rbp(ex, -10 + ey + b, C.SK4); rbp(ex + 1, -10 + ey + b, C.GLOW);
+  // thin whip antenna with a blinking tip
+  const sw = rb.moving ? -1 : (osc(18, t, 0.2) > 0.4 ? 1 : 0);
+  rbp(0, -13 + b, C.S1); rbp(0, -14 + b, C.S1); rbp(sw > 0 ? 1 : 0, -15 + b, C.S1); rbp(sw, -16 + b, C.S1);
+  rbp(sw, -17 + b, frac(54 * t / LOOP_S) < 0.3 ? C.RED : C.OX);
+}
+
+// =================================================================== PARTICLES (one pooled, allocation-free system)
+const PN = 300;
+const pX = new Float32Array(PN), pY = new Float32Array(PN), pVX = new Float32Array(PN), pVY = new Float32Array(PN);
+const pAge = new Float32Array(PN), pLife = new Float32Array(PN), pLand = new Float32Array(PN), pAux = new Float32Array(PN);
+const pKind = new Uint8Array(PN), pFlag = new Uint8Array(PN);
+const pFree = new Int16Array(PN);
+let pFreeN = 0;
+const P_FREE = 0, P_DROP = 1, P_SPLASH = 2, P_DRIP = 3, P_STEAM = 10, P_MOTH = 11, P_FLY = 12;
+const GRAV = 170;                       // px/s^2 (28px woman ~ 1.65 m)
+const N_STEAM = 24, N_MOTH = 8, N_FLY = 10;
+const MOTH_LAMP = [0, 0, 0, 1, 1, 1, 2, 2];
+const FLY_X = [70, 118, 164, 190, 238, 262, 312, 352, 398, 446], FLY_Y = [141, 146, 140, 147, 143, 139, 146, 141, 144, 139];
+const rngState = new Uint32Array(1);       // typed storage: a 32-bit state never boxes
+function rnd() { rngState[0] = Math.imul(rngState[0], 1664525) + 1013904223; return rngState[0] / 4294967296; }
+
+function particlesReset() {
+  rngState[0] = 12345;
+  pFreeN = 0;
+  for (let i = PN - 1; i >= 0; i--) { pKind[i] = P_FREE; pFree[pFreeN++] = i; }
+  // ambient slots are claimed permanently and driven by loop phase
+  for (let k = 0; k < N_STEAM; k++) { const i = pFree[--pFreeN]; pKind[i] = P_STEAM; pAux[i] = k; }
+  for (let k = 0; k < N_MOTH; k++) { const i = pFree[--pFreeN]; pKind[i] = P_MOTH; pAux[i] = k; }
+  for (let k = 0; k < N_FLY; k++) { const i = pFree[--pFreeN]; pKind[i] = P_FLY; pAux[i] = k; }
+}
+function spawn(kind, x, y, vx, vy, life, land, aux) {
+  if (pFreeN === 0) return -1;
+  const i = pFree[--pFreeN];
+  pKind[i] = kind; pX[i] = x; pY[i] = y; pVX[i] = vx; pVY[i] = vy;
+  pAge[i] = 0; pLife[i] = life; pLand[i] = land; pAux[i] = aux; pFlag[i] = 0;
+  return i;
+}
+function kill(i) { pKind[i] = P_FREE; pFree[pFreeN++] = i; }
+
+// water from the spout rose: aimed at a point that sweeps across the bed
+function emitPour(sx, sy, pourX, bed) {
+  const bx = BEDS[bed].x, s = slope(bx + 14);
+  for (let k = 0; k < 1; k++) {
+    const spill = rnd() < 0.07;
+    const tx = spill ? bx + BED_W - 3 + rnd() * 4 : pourX + (rnd() - 0.5) * 3.5;
+    const ty = spill ? BED_BASE - s + 2 + rnd() * 3 : BED_SOIL - s + rnd() * 1.4;
+    const T = 0.3 + rnd() * 0.07;
+    const vx = (tx - sx) / T + (rnd() - 0.5) * 3, vy = (ty - sy - 0.5 * GRAV * T * T) / T;
+    spawn(P_DROP, sx + (rnd() - 0.5), sy, vx, vy, T + 0.25, ty, spill ? -1 : bed);
+  }
+}
+function emitDrip(sx, sy, vx, feetY) {
+  spawn(P_DRIP, sx, sy, vx * 0.6, 4, 1.2, feetY + 1 + Math.floor(rnd() * 2), -1);
+}
+function splashAt(x, y, n, onPath) {
+  for (let k = 0; k < n; k++) spawn(P_SPLASH, x, y - 0.5, (rnd() - 0.5) * 34, -18 - rnd() * 26, 0.2 + rnd() * 0.12, y + (onPath ? 0 : 0.5), onPath ? 1 : 0);
+}
+function soilHit(bed, x) {
+  const col = Math.round(x) - BEDS[bed].x;
+  if (col < 1 || col >= BED_W - 1) return;
+  for (let d = -1; d <= 1; d++) {
+    const c = col + d;
+    if (c >= 1 && c < BED_W - 1) bedWet[bed * BED_W + c] = Math.min(1, bedWet[bed * BED_W + c] + (d === 0 ? 0.07 : 0.035));
+  }
+  for (let b = 0; b < bloomN; b++) if (bloomBed[b] === bed && Math.abs(bloomX[b] - x) < 2.5 && bloomPerk[b] <= -0.5) bloomPerk[b] = 0.25;
+}
+function updateParticles() {
+  for (let i = 0; i < PN; i++) {
+    const k = pKind[i];
+    if (k === P_FREE || k >= P_STEAM) continue;
+    pAge[i] += DT;
+    pVY[i] += GRAV * DT;
+    pX[i] += pVX[i] * DT; pY[i] += pVY[i] * DT;
+    if (k === P_DROP || k === P_DRIP) {
+      if (pVY[i] > 0 && pY[i] >= pLand[i]) {
+        const bed = pAux[i], onPath = bed < 0;
+        if (!onPath) soilHit(bed, pX[i]); else addWetSpot(Math.round(pX[i]), Math.round(pLand[i]));
+        splashAt(pX[i], pLand[i], 2 + (rnd() < 0.5 ? 1 : 0), onPath);
+        kill(i); continue;
+      }
+    } else if (k === P_SPLASH) {
+      if (pVY[i] > 0 && pY[i] >= pLand[i]) {
+        if (pAux[i] > 0 && rnd() < 0.5) addWetSpot(Math.round(pX[i]), Math.round(pLand[i]));
+        kill(i); continue;
+      }
+    }
+    if (pAge[i] >= pLife[i]) kill(i);
+  }
+}
+function waterColour(i) {
+  const a = pAge[i], k = pKind[i];
+  if (k === P_SPLASH) return a < 0.06 ? C.WHITE : a < 0.14 ? C.WL : C.WM;
+  return a < 0.09 ? C.WHITE : a < 0.2 ? C.WL : C.WM;
+}
+function drawWater(cx, cy) {
+  for (let i = 0; i < PN; i++) {
+    const k = pKind[i];
+    if (k === P_FREE || k >= P_STEAM) continue;
+    const x = Math.round(pX[i]) - cx, y = Math.round(pY[i]) - cy + IY0;
+    if (x < 0 || x >= W || y < IY0 || y >= IY1) continue;
+    const bg = fb[y * W + x];
+    let c = waterColour(i);
+    // backlit sparkle: one white frame when a drop crosses the sun, a lamp or window light
+    if (!pFlag[i] && (bg === C.GLOW || bg === C.HOT || bg === C.RIM)) { c = C.WHITE; pFlag[i] = 1; }
+    pset(x, y, c, L.WATER);
+  }
+}
+// ---- ambient (phase driven, seamless): steam wisps, moths, fireflies
+function drawSteam(f, camX, camY) {
+  const t = f / FPS;
+  const ox = Math.round(camX * F_MID), oy = Math.round(camY * F_MID) - IY0;
+  for (let i = 0; i < PN; i++) {
+    if (pKind[i] !== P_STEAM) continue;
+    const k = pAux[i], tw = k & 1, p = frac(9 * t / LOOP_S + (k >> 1) / 12);
+    const bx = TOWER_X[tw] + p * 18 + 1.8 * Math.sin(TAU * (p * 1.5 + k * 0.13));
+    const by = TOWER_TOP - 1 - p * 46;
+    const r = 2.2 + p * 6, dens = 0.9 * Math.pow(1 - p, 0.7);
+    const col = p < 0.14 ? C.SK4 : p < 0.38 ? C.SK3 : p < 0.7 ? C.SK2 : C.CLOUD;
+    const cxs = bx - ox, cys = by - oy, ri = Math.ceil(r);
+    for (let y = Math.round(cys) - ri; y <= Math.round(cys) + ri; y++) for (let x = Math.round(cxs) - ri; x <= Math.round(cxs) + ri; x++) {
+      if (x < 0 || x >= W || y < IY0 || y >= IY1) continue;
+      const ddx = x - cxs, ddy = y - cys, d = Math.sqrt(ddx * ddx + ddy * ddy) / r;
+      if (d < 1 && bay(x, y) < dens * (1.15 - d * d)) { const ii = y * W + x; fb[ii] = (d > 0.6 && p < 0.5 && y > cys) ? C.SK4 : col; lid[ii] = L.MID; }
+    }
+  }
+}
+function drawMothsAndFlies(tick, cx, cy) {
+  const t = tick / FPS;
+  const jt = (tick / 4) | 0;
+  for (let i = 0; i < PN; i++) {
+    const kd = pKind[i];
+    if (kd === P_MOTH) {
+      const k = pAux[i], lp = LAMPS[MOTH_LAMP[k]], s = lp.porch ? 0 : slope(lp.x);
+      const th = TAU * (27 * t / LOOP_S) + k * 1.7;
+      const x = lp.x + 6 * Math.sin(3 * th + k) + 3 * Math.sin(7 * th) + (hash(jt, k) - 0.5) * 2.2;
+      const y = lp.y - s + 4 * Math.sin(2 * th + k * 0.7) + (hash(jt, k + 50) - 0.5) * 2.2 - 1;
+      const sx = Math.round(x) - cx, sy = Math.round(y) - cy + IY0;
+      pset(sx, sy, k & 1 ? C.CREAM : C.HAZE, L.WATER);
+      if (((tick >> 2) + k) & 1) pset(sx + 1, sy, C.CREAMS, L.WATER);      // wing flutter
+    } else if (kd === P_FLY) {
+      const k = pAux[i];
+      const x = FLY_X[k] + 3 * osc(3, t, k * 0.21), y = FLY_Y[k] - slope(FLY_X[k]) + 2 * osc(4, t, k * 0.37);
+      const b = frac(18 * t / LOOP_S + hash(k, 8));
+      if (b > 0.2) continue;
+      const sx = Math.round(x) - cx, sy = Math.round(y) - cy + IY0;
+      pset(sx, sy, b < 0.13 ? C.PALEY : C.MARI, L.WATER);
+      if (b < 0.08) { premap(sx - 1, sy, LIT, M_ALL); premap(sx + 1, sy, LIT, M_ALL); premap(sx, sy - 1, LIT, M_ALL); }
+    }
+  }
+}
+
+// =================================================================== HERO AIRCAR (parallax 0.7, final SETTLE only)
+const CAR_W = 36, CAR_H = 14;
+const carSpr = new Uint8Array(CAR_W * CAR_H).fill(T);
+function cset(x, y, c) { if (x >= 0 && y >= 0 && x < CAR_W && y < CAR_H) carSpr[y * CAR_W + x] = c; }
+function buildCar() {
+  // body: long black finned sedan, nose to the right
+  for (let x = 3; x <= 32; x++) for (let y = 4; y <= 8; y++) cset(x, y, y === 4 ? C.S0 : C.BLK);
+  for (let y = 5; y <= 8; y++) cset(33, y, C.BLK);
+  cset(34, 6, C.BLK); cset(34, 7, C.S2);
+  for (let x = 1; x <= 7; x++) for (let y = 1 + Math.max(0, x - 2); y <= 8; y++) cset(x, y, C.BLK);   // tail fin
+  for (let x = 2; x <= 6; x++) cset(x, Math.max(1, x - 1), C.S0);
+  cset(1, 2, C.RED); cset(1, 3, C.RED); cset(1, 4, C.OX);                                         // tail lights
+  // cabin greenhouse with warm interior glint and sunset on the roof
+  for (let x = 12; x <= 25; x++) for (let y = 1; y <= 3; y++) {
+    if (y === 1 && (x < 14 || x > 23)) continue;
+    let c = C.BLK;
+    if (y === 1) c = x > 18 ? C.SK3 : C.S0;
+    else if (x !== 13 && x !== 19 && x !== 24) c = y === 2 ? C.SK1 : C.SK0;
+    cset(x, y, c);
+  }
+  cset(16, 3, C.SK4); cset(21, 2, C.SK2);
+  // chrome spear along the flank, bumpers, headlight
+  for (let x = 5; x <= 31; x++) cset(x, 5, x > 26 ? C.S3 : C.S1);
+  cset(33, 5, C.HOT); cset(32, 8, C.S2); cset(33, 8, C.S2); cset(2, 8, C.S1);
+  // round chrome turbine pods (near side), far-side pods peeking behind
+  const pods = [8, 27];
+  for (let k = 0; k < 2; k++) {
+    const pc = pods[k];
+    for (let y = 6; y <= 12; y++) for (let x = pc - 3; x <= pc + 3; x++) {
+      const d = Math.hypot(x - pc, y - 9.2);
+      if (d > 3.1) continue;
+      cset(x, y, d < 1.3 ? C.INK : d < 2.2 ? C.S0 : ((x > pc && y < 9) ? C.S3 : C.S1));
+    }
+    cset(pc - 4, 7, C.S0);
+  }
+}
+const car = { on: 0, sx: 0, sy: 0 };
+function carState(f, camX, camY) {
+  const t = f / FPS;
+  car.on = 0;
+  if (t < AIRCAR_T0 || t > AIRCAR_T1) return;
+  const u = (t - AIRCAR_T0) / (AIRCAR_T1 - AIRCAR_T0);
+  car.on = 1;
+  car.sx = Math.round(lerp(-44, 336, u) - camX * F_CAR + 160 * F_CAR);
+  car.sy = Math.round(lerp(28, 60, smooth(u)) - camY * F_CAR + 8 * F_CAR) + IY0;
+}
+function drawCar(tick, camX, camY) {
+  const t = tick / FPS;
+  if (!car.on) return;
+  const x0 = car.sx, y0 = car.sy;
+  // headlight cone: dithered, fanning forward and slightly down
+  for (let d = 1; d < 52; d++) {
+    const cxl = x0 + 34 + d, cyl = y0 + 5 + d * 0.24, hw = 0.6 + d * 0.21;
+    for (let y = Math.floor(cyl - hw); y <= Math.ceil(cyl + hw); y++) {
+      const e = 1 - Math.abs(y - cyl) / (hw + 0.5);
+      if (e <= 0) continue;
+      const k = (1 - d / 52) * Math.min(1, e * 1.7);
+      if (bay(cxl, y) < k * 0.8) premap(cxl, y, BEAM, M_SKYISH | (1 << L.FAR) | (1 << L.MID));
+      if (d < 18 && bay(cxl + 1, y) < k * 0.6) premap(cxl, y, LIT, M_ALL);
+    }
+  }
+  // warm turbine glow beneath the pods
+  for (let k = 0; k < 2; k++) {
+    const px = x0 + (k ? 27 : 8);
+    for (let y = y0 + 12; y < y0 + 18; y++) for (let x = px - 3; x <= px + 3; x++) {
+      const dd = (Math.abs(x - px) / 3.5) + (y - y0 - 12) / 6;
+      if (dd < 1 && bay(x + tick, y) < (1 - dd) * 0.9) premap(x, y, LIT, M_ALL);
+    }
+  }
+  for (let y = 0; y < CAR_H; y++) for (let x = 0; x < CAR_W; x++) {
+    const c = carSpr[y * CAR_W + x];
+    if (c !== T) pset(x0 + x, y0 + y, c, L.CAR);
+  }
+  const flick = (tick >> 2) & 1;
+  pset(x0 + 7 + flick, y0 + 12, C.GLOW, L.CAR); pset(x0 + 26 + flick, y0 + 12, C.GLOW, L.CAR);
+  pset(x0 + 8, y0 + 12, C.HOT, L.CAR); pset(x0 + 27, y0 + 12, C.HOT, L.CAR);
+  // underglow: briefly lifts garden highlights beneath its track (palette remap)
+  const u = (t - AIRCAR_T0) / (AIRCAR_T1 - AIRCAR_T0), str = Math.sin(Math.PI * u) * 0.55;
+  const gx = x0 + 18;
+  for (let y = IY0 + 60; y < IY1; y++) for (let x = Math.max(0, gx - 60); x <= Math.min(W - 1, gx + 60); x++) {
+    const i = y * W + x, l = lid[i];
+    if (l < L.WALL || l > L.HER) continue;
+    if (bay(x, y) < str * (1 - Math.abs(x - gx) / 60)) fb[i] = UPG[fb[i]];
+  }
+}
+
+// =================================================================== FOREGROUND (parallax 1.4, out of focus)
+const fgL = makeLayer(544, 158, F_FG, L.FG);
+const BLADES = [];          // x, height, lean
+const FG_GROUND = 153;
+function fgBlob(x0, y0, x1, y1, core) {
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) lset(fgL, x, y, core ? C.BLK : C.INK);
+}
+function buildForeground() {
+  // telephone poles with crossbars and glass insulators
+  const poles = [[-4, 1], [536, -1]];
+  for (let p = 0; p < 2; p++) {
+    const px = poles[p][0], dir = poles[p][1];
+    for (let y = 16; y < 158; y++) { lset(fgL, px - 1, y, C.INK); for (let x = px; x < px + 5; x++) lset(fgL, x, y, C.BLK); lset(fgL, px + 5, y, C.INK); }
+    const cx0 = dir > 0 ? px : px - 30, cx1 = dir > 0 ? px + 36 : px + 6;
+    fgBlob(cx0 - 1, 23, cx1 + 1, 26, false); fgBlob(cx0, 24, cx1, 25, true);
+    for (let k = 0; k < 3; k++) {
+      const ix = cx0 + 3 + k * 9;
+      fgBlob(ix - 1, 19, ix + 2, 23, false); fgBlob(ix, 20, ix + 1, 22, true);
+      lset(fgL, ix + 1, 20, C.CYAND);                                          // aqua glass glint
+    }
+  }
+  // sagging wires between the insulators (thin, 1px)
+  for (let k = 0; k < 3; k++) {
+    const xa = -4 + 3 + k * 9 + 1, xb = 536 - 30 + 3 + k * 9 + 1;
+    for (let x = xa; x <= xb; x++) {
+      const u = (x - xa) / (xb - xa), y = Math.round(20 + k * 2 + (11 + k * 3) * 4 * u * (1 - u));
+      lset(fgL, x, y, C.BLK);
+    }
+  }
+  // leafy branch hanging into a top corner: a curved twig carrying soft, irregular leaf masses
+  for (let i = 0; i <= 80; i++) {
+    const x = 222 + i, y = Math.round(-2 + i * 0.22 + 4 * Math.sin(i / 16));
+    fgBlob(x, y, x, y + (i < 40 ? 1 : 0), true);
+  }
+  for (let c = 0; c < 7; c++) {
+    const bx = 228 + c * 11 + Math.round(hash(c, 81) * 4), by = Math.round(-2 + (bx - 222) * 0.22 + 4 * Math.sin((bx - 222) / 16)) + 4 + Math.round(hash(c, 82) * 5);
+    for (let k = 0; k < 6; k++) {
+      const ex = bx + Math.round((hash(c, 90 + k) - 0.5) * 12), ey = by + Math.round(hash(c, 100 + k) * 8) - 2;
+      const rx = 2.2 + hash(c, 110 + k) * 2.4, ry = 1.8 + hash(c, 120 + k) * 1.8;
+      for (let yy = Math.floor(ey - ry - 1); yy <= Math.ceil(ey + ry + 1); yy++) for (let xx = Math.floor(ex - rx - 1); xx <= Math.ceil(ex + rx + 1); xx++) {
+        const d = Math.hypot((xx - ex) / rx, (yy - ey) / ry);
+        if (d < 1) lset(fgL, xx, yy, C.BLK);
+        else if (d < 1.35 && lget(fgL, xx, yy) === T) lset(fgL, xx, yy, C.INK);   // defocus halo
+      }
+    }
+  }
+  // wrought-iron gate posts with spear finials at the bottom edge
+  const gates = [64, 500];
+  for (let g = 0; g < 2; g++) {
+    const gx = gates[g];
+    for (let y = 130; y < 158; y++) { lset(fgL, gx - 1, y, C.INK); lset(fgL, gx, y, C.BLK); lset(fgL, gx + 1, y, C.BLK); lset(fgL, gx + 2, y, C.INK); }
+    for (let y = 122; y < 130; y++) {
+      const hw = y < 126 ? (y - 122) * 0.7 : (130 - y) * 0.9;
+      for (let x = Math.round(gx + 0.5 - hw); x <= Math.round(gx + 0.5 + hw); x++) lset(fgL, x, y, C.BLK);
+    }
+    for (let a = 0; a < 12; a++) lset(fgL, gx + 2 + Math.round(3 * Math.cos(a / 12 * TAU)), 136 + Math.round(3 * Math.sin(a / 12 * TAU)), C.BLK);
+  }
+  // ground strip under the grass
+  for (let y = FG_GROUND; y < 158; y++) for (let x = 0; x < 544; x++) lset(fgL, x, y, y === FG_GROUND ? C.INK : C.BLK);
+  // grass blades (drawn per frame to sway)
+  for (let x = 0; x < 544; x += 1) {
+    if (hash(x, 61) < 0.45) continue;
+    const clump = pnoise(x / 13, 64, 62);
+    const h = Math.round(2 + clump * 5 + hash(x, 63) * 3 + (clump > 0.8 ? 6 : 0));
+    BLADES.push([x, h, (hash(x, 64) - 0.5) * 0.5]);
+  }
+}
+function drawForeground(f, camX, camY) {
+  const t = f / FPS;
+  const ox = Math.round(camX * F_FG), oy = Math.round(camY * F_FG);
+  blit(fgL, ox, oy);
+  const wind = osc(12, t, 0.1) * 0.6 + osc(30, t, 0.5) * 0.3;
+  for (let i = 0; i < BLADES.length; i++) {
+    const b = BLADES[i], sx0 = b[0] - ox;
+    if (sx0 < -4 || sx0 > W + 4) continue;
+    const h = b[1];
+    for (let k = 0; k < h; k++) {
+      const u = k / h, x = Math.round(sx0 + (b[2] + wind) * u * u * 3), y = FG_GROUND - k - oy + IY0;
+      pset(x, y, u > 0.8 ? C.INK : C.BLK, L.FG);
+    }
+  }
+}
+
+// =================================================================== SIMULATION
+const P = pose(), PQ = pose();
+let simFrame = 0, rbDrawX = STEP_X + RB_GAP, rbDrawFace = -1;
+const DRIP_CUTOFF = LOOP_S - WS_LIFE - 1.5;          // wet spots from drips must dry before the loop point
+
+function loopReset() {
+  particlesReset(); bedWet.fill(0); wsLife.fill(0); bloomPerk.fill(-1); robotReset();
+}
+function sunScreenX(camX) { return SUN_X - Math.round(camX * F_SKY); }
+function poseTick(f) {
+  const t = f / FPS, camX = Math.round(camPathX[f]), camY = Math.round(camPathY[f]);
+  evalPose(f, PQ);
+  herX = Math.round(PQ.x); herFace = PQ.face; herFeet = groundY(herX);
+  buildHer(PQ);
+  const sdx = sunScreenX(camX) - (herX - camX);
+  const sdy = (HZ - Math.round(camY * F_FAR)) - (herFeet - 20 - camY);
+  finishHer(herFace, sdx, sdy);
+  rbDrawX = Math.round(rb.x); rbDrawFace = rb.face;
+  buildRobot(f);
+}
+function update(f) {
+  const t = f / FPS;
+  evalPose(f, P);
+  const camX = Math.round(camPathX[f]);
+  carState(f, camX, Math.round(camPathY[f]));
+  robotUpdate(f, car.on ? car.sx + 18 : -999, camX);
+  if (f % 6 === 0) poseTick(f);
+  // water
+  const spx = herX + herFace * herSpout.x, spy = herFeet + herSpout.y;
+  if (P.pouring && P.bed >= 0) emitPour(spx, spy, P.pourX, P.bed);
+  else if (P.walking && t < DRIP_CUTOFF && rnd() < 0.012) emitDrip(spx, spy, P.speed * herFace, herFeet);
+  updateParticles();
+  // drying soil, perk-up timers, drying flagstones
+  const dry = DT * (t < 40 ? 1 / 22 : 1 / 7);
+  for (let i = 0; i < bedWet.length; i++) bedWet[i] = Math.max(0, bedWet[i] - dry);
+  for (let i = 0; i < bloomN; i++) if (bloomPerk[i] > -1) bloomPerk[i] -= DT;
+  for (let i = 0; i < MAXWS; i++) if (wsLife[i] > 0) wsLife[i] -= DT;
+}
+function step() {
+  simFrame++;
+  if (simFrame >= LOOP_F) { simFrame = 0; loopReset(); }
+  update(simFrame);
+}
+
+// =================================================================== RENDER
+const stamp = new Uint32Array(W * H);
+let stampId = 1;
+function castShadow(buf, bw, bh, x0, y0, feetSy, ground) {
+  if (++stampId > 0x3fffffff) { stamp.fill(0); stampId = 1; }
+  for (let y = 0; y < bh; y++) for (let x = 0; x < bw; x++) {
+    if (buf[y * bw + x] === T) continue;
+    const h = feetSy - (y0 + y);
+    if (h < 0) continue;
+    const sx = x0 + x + Math.round(h * SHADOW_SKEW), sy = feetSy + 1 + Math.round(h * 0.45);
+    if (sx < 0 || sx >= W || sy < IY0 || sy >= IY1) continue;
+    const i = sy * W + sx;
+    if (stamp[i] === stampId || lid[i] !== ground) continue;
+    stamp[i] = stampId; fb[i] = SHD[fb[i]];
+  }
+}
+function drawHer(cx, cy) {
+  const x0 = herX - cx - (herFace > 0 ? AX : SPR_W - 1 - AX), y0 = herFeet - AY - cy + IY0;
+  castShadow(sprOut, SPR_W, SPR_H, x0, y0, y0 + AY, L.GROUND);
+  for (let y = 0; y < SPR_H; y++) for (let x = 0; x < SPR_W; x++) {
+    const c = sprOut[y * SPR_W + x];
+    if (c !== T) pset(x0 + x, y0 + y, c, L.HER);
+  }
+}
+const rbOut = new Uint8Array(RB_W * RB_H);
+function drawRobot(cx, cy, camX, camY) {
+  const f = rbDrawFace;
+  for (let y = 0; y < RB_H; y++) for (let x = 0; x < RB_W; x++) rbOut[y * RB_W + x] = rbSpr[y * RB_W + (f > 0 ? x : RB_W - 1 - x)];
+  const x0 = rbDrawX - cx - (f > 0 ? RAX : RB_W - 1 - RAX), y0 = groundY(rbDrawX) + RB_LANE - RAY - cy + IY0;
+  castShadow(rbOut, RB_W, RB_H, x0, y0, y0 + RAY, L.GROUND);
+  const sdx = sunScreenX(camX) > x0 + RAX ? 1 : -1;
+  for (let y = 0; y < RB_H; y++) for (let x = 0; x < RB_W; x++) {
+    let c = rbOut[y * RB_W + x];
+    if (c === T) continue;
+    // dim amber rim only on sun-side top edges of dome and body (lower contrast than hers)
+    if ((c === C.S1 || c === C.S2) && y < RAY - 3 && y > 0 && rbOut[(y - 1) * RB_W + x] === T) {
+      const nx = x + sdx;
+      if (nx < 0 || nx >= RB_W || rbOut[y * RB_W + nx] === T || rbOut[(y - 1) * RB_W + nx] === T) c = C.SK4;
+    }
+    pset(x0 + x, y0 + y, c, L.ROBOT);
+  }
+}
+const vig = new Uint8Array(W * H);
+function buildVignette() {
+  for (let y = IY0; y < IY1; y++) for (let x = 0; x < W; x++) {
+    // corner-weighted falloff: edges stay light, corners darken
+    const dx = (x - 159.5) / 160, dy = (y - IY0 - 66.5) / 67, c = (dx * dx + dy * dy) * 0.55 + dx * dx * dy * dy * 1.6;
+    let v = 0;
+    if (bay(x, y) < smooth((c - 0.42) / 0.7) * 0.95) v = 1;
+    if (bay(x + 2, y + 1) < smooth((c - 1.1) / 0.8) * 0.85) v = 2;
+    vig[y * W + x] = v;
+  }
+}
+function render(f) {
+  const tick = f;
+  const camX = Math.round(camPathX[f]), camY = Math.round(camPathY[f]);
+  // 1 sky
+  blit(skyL, Math.round(camX * F_SKY), Math.round(camY * F_SKY));
+  drawClouds(f, camX, camY); drawStars(f, camX, camY); drawSearchlights(f, camX, camY); drawSun(camX, camY, tick);
+  // 2 far city + bay
+  blit(farL, Math.round(camX * F_FAR), Math.round(camY * F_FAR));
+  drawFarDynamic(tick, camX, camY); drawFog(f, camX, camY);
+  // 3 fusion headland + bridge
+  blit(midL, Math.round(camX * F_MID), Math.round(camY * F_MID));
+  drawMidDynamic(f, camX, camY); drawSteam(f, camX, camY);
+  // 4 near hillside
+  drawHillHaze(camX, camY);
+  blit(hillL, Math.round(camX * F_HILL), Math.round(camY * F_HILL));
+  drawHillDynamic(f, camX, camY);
+  // 5 garden
+  blit(gardenL, camX, camY);
+  drawSoilAndBlooms(camX, camY);
+  drawLamps(tick, camX, camY);
+  drawWetSpots(camX, camY);
+  drawHer(camX, camY);
+  drawRobot(camX, camY, camX, camY);
+  for (let i = 0; i < LAMPS.length; i++) {            // lamp light catching the figures
+    const lp = LAMPS[i], s = lp.porch ? 0 : slope(lp.x);
+    lightPool(lp.x - camX, lp.y - s + 22 - camY + IY0, 22, 26, (lampFlicker(i, f) * 45 / 100) | 0, (1 << L.HER) | (1 << L.ROBOT), LIT);
+  }
+  drawWater(camX, camY);
+  drawMothsAndFlies(tick, camX, camY);
+  drawSlats(camX, camY);
+  // 6 hero aircar
+  drawCar(tick, camX, camY);
+  // 7 foreground
+  drawForeground(f, camX, camY);
+  // post: vignette, film grain (12 fps), letterbox
+  for (let i = IY0 * W; i < IY1 * W; i++) { const v = vig[i]; if (v) { fb[i] = SHD[fb[i]]; if (v === 2) fb[i] = SHD[fb[i]]; } }
+  const gt = Math.floor(f / 5), npx = W * IH;
+  for (let k = 0; k < 430; k++) {
+    const i = IY0 * W + Math.floor(hash(gt, k) * npx), g = GRN[fb[i]];
+    if (g) fb[i] = g - 1;
+  }
+  fb.fill(0, 0, IY0 * W); fb.fill(0, IY1 * W, W * H);
+
+}
+
+// =================================================================== DISPLAY + MAIN LOOP
+const screenCv = document.getElementById('screen');
+const sctx = screenCv.getContext('2d', { alpha: false });
+const offCv = document.createElement('canvas');
+offCv.width = W; offCv.height = H;
+const octx = offCv.getContext('2d');
+const img = octx.createImageData(W, H);
+const out32 = new Uint32Array(img.data.buffer);
+const PAL32 = new Uint32Array(256);
+for (let i = 0; i < NPAL; i++) {
+  const v = parseInt(PAL_HEX[i], 16);
+  PAL32[i] = (0xff << 24 | (v & 0xff) << 16 | (v >> 8 & 0xff) << 8 | (v >> 16 & 0xff)) >>> 0;
+}
+let scale = 1, offX = 0, offY = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const bw = Math.floor(window.innerWidth * dpr), bh = Math.floor(window.innerHeight * dpr);
+  screenCv.width = bw; screenCv.height = bh;
+  scale = Math.max(1, Math.floor(Math.min(bw / W, bh / H)));
+  offX = Math.floor((bw - W * scale) / 2); offY = Math.floor((bh - H * scale) / 2);
+  sctx.imageSmoothingEnabled = false;
+  sctx.fillStyle = '#000'; sctx.fillRect(0, 0, bw, bh);
+}
+function present() {
+  for (let i = 0; i < W * H; i++) out32[i] = PAL32[fb[i]];
+  octx.putImageData(img, 0, 0);
+  sctx.imageSmoothingEnabled = false;
+  sctx.drawImage(offCv, 0, 0, W, H, offX, offY, W * scale, H * scale);
+}
+
+const params = new URLSearchParams(location.search);
+const FREEZE = params.get('freeze') === '1';
+// mutable doubles live in a typed array so per-frame stores never box a heap number
+const clk = new Float64Array(5);            // 0 accumulator, 1 last timestamp, 2 stat sum, 3 stat max, 4 stat count
+clk[1] = -1;
+// perf probe for verification (?stats=1 writes the mean frame cost into the title)
+const STATS = params.get('stats') === '1';
+function frameLoop(now) {
+  if (clk[1] < 0) clk[1] = now;
+  let dt = (now - clk[1]) / 1000; clk[1] = now;
+  if (dt > 0.25) dt = 0.25;
+  const c0 = STATS ? performance.now() : 0;
+  if (!FREEZE) { clk[0] += dt; while (clk[0] >= DT) { step(); clk[0] -= DT; } }
+  render(simFrame); present();
+  if (STATS) {
+    const c = performance.now() - c0; clk[4]++; clk[2] += c; if (c > clk[3] && clk[4] > 60) clk[3] = c;
+    if ((clk[4] % 120) === 0) document.title = 'avg ' + (clk[2] / clk[4]).toFixed(2) + 'ms max ' + clk[3].toFixed(2) + 'ms f' + simFrame;
+  }
+  requestAnimationFrame(frameLoop);
+}
+function init() {
+  buildSky(); buildFar(); buildFog(); buildMid(); buildHill(); buildGarden(); buildCar(); buildForeground();
+  buildVignette(); buildCameraPath();
+  loopReset();
+  const seek = parseFloat(params.get('t') || '0');
+  const target = Math.floor(clamp(isNaN(seek) ? 0 : seek, 0, LOOP_S - DT) * FPS);
+  simFrame = 0; update(0);
+  while (simFrame < target) step();
+  resize();
+  window.addEventListener('resize', resize);
+  requestAnimationFrame(frameLoop);
+}
+init();
+</script>
+</body>
+</html>

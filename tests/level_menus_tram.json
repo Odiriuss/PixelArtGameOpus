@@ -1,0 +1,10 @@
+[{"url":"?mute=1&debug=1&start=chase"},{"wait":1500},{"shot":"t14_debug.png"},
+ {"key":"Escape"},{"wait":200},{"key":"KeyM"},{"wait":100},{"eval":"AUD.muted+' '+window.__test.GAME.mode","label":"mute toggled in pause"},
+ {"key":"KeyR"},{"wait":400},{"eval":"JSON.stringify({mode: window.__test.GAME.mode, phase: window.__test.MISSION.phase, retries: window.__test.STATS.retries})","label":"R restart"},
+ {"eval":"(()=>{const t=window.__test; t.FRANK.hp=0; t.FRANK.alive=false; return 1})()"},{"wait":1500},
+ {"eval":"JSON.stringify({phase: window.__test.MISSION.phase, why: window.__test.MISSION.failWhy})","label":"failed"},{"shot":"t14_fail.png"},
+ {"key":"Enter"},{"wait":800},{"eval":"JSON.stringify({phase: window.__test.MISSION.phase, alive: window.__test.FRANK.alive, hp: window.__test.FRANK.hp, lock: window.__test.MISSION.lockInput})","label":"after retry"},
+ {"eval":"(()=>{const t=window.__test; const T=t.VEH.find(v=>v.kin); const V=t.VEH.find(v=>v.parked&&v.model==='sedan'); const dir=T.tram.dir; V.x=T.x; V.y=T.y+dir*10; V.a=Math.PI/2; V.vx=V.vy=0; V.parked=true; return 'tram '+T.x.toFixed(1)+','+T.y.toFixed(1)+' dir '+dir+' v '+T.tram.v.toFixed(1)+' wait '+T.tram.wait})()","label":"block tram"},
+ {"wait":2500},{"eval":"(()=>{const t=window.__test; const T=t.VEH.find(v=>v.kin); return 'tram y '+T.y.toFixed(1)+' v '+T.tram.v.toFixed(2)+' blocked '+T.tram.blocked+' wait '+T.tram.wait})()","label":"tram after 2.5s"},
+ {"wait":4000},{"eval":"(()=>{const t=window.__test; const T=t.VEH.find(v=>v.kin); return 'tram y '+T.y.toFixed(1)+' v '+T.tram.v.toFixed(2)+' blocked '+T.tram.blocked})()","label":"tram after 6.5s (pushes through)"}
+]

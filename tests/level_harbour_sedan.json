@@ -1,0 +1,9 @@
+[{"url":"?mute=1&start=chase"},{"wait":1200},
+ {"eval":"(()=>{const t=window.__test; const V=t.VEH.find(v=>v.parked&&v.model==='coupe'); t.FRANK.x=V.x; t.FRANK.y=V.y; enterVehicle(V); V.x=66; V.y=84; V.a=Math.PI/2; V.vx=0; V.vy=0; const S=t.MISSION.sedan; S.ai=null; S.x=71; S.y=88.3; S.a=Math.PI/2; S.vx=0; S.vy=11; return 1})()"},
+ {"wait":700},{"shot":"t13_sedan_in.png"},
+ {"eval":"JSON.stringify({s: window.__test.state(), phase: window.__test.MISSION.phase, crew: window.__test.MISSION.crew.map(p=>[+p.x.toFixed(1),+p.y.toFixed(1),p.visible, surfAt(p.x,p.y)]), cap: window.__test.MISSION.caption && window.__test.MISSION.caption.text})","label":"sedan in"},
+ {"wait":3000},{"shot":"t13_fight.png"},
+ {"eval":"JSON.stringify({s: window.__test.state(), crew: window.__test.MISSION.crew.map(p=>[+p.x.toFixed(1),+p.y.toFixed(1),p.ai&&p.ai.state])})","label":"fight on quay"},
+ {"eval":"window.__test.PLAYER.god=true; 1"},{"wait":20000},
+ {"eval":"JSON.stringify({s: window.__test.state(), crew: window.__test.MISSION.crew.map(p=>[+p.x.toFixed(1),+p.y.toFixed(1),p.ai&&p.ai.state,p.alive])})","label":"later"}
+]

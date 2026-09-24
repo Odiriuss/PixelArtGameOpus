@@ -1,0 +1,26 @@
+# secrets and local settings
+.env
+.env.*
+!.env.example
+appsettings.*.local.json
+.claude/settings.local.json
+CLAUDE.local.md
+
+# build and dependency output
+bin/
+obj/
+publish/
+node_modules/
+
+# screenshots written by the test runners
+shots/
+
+# editors and OS
+*.user
+*.suo
+.vs/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

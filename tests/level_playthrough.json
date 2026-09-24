@@ -1,0 +1,11 @@
+[{"url":"?mute=1&auto=1&god=1"},{"wait":1000},
+ {"until":"window.__test.MISSION.phase==='chase'","ms":30000,"label":"chase begins"},
+ {"until":"window.__test.MISSION.phase!=='chase'","ms":150000,"label":"chase ends","log":"JSON.stringify(window.__test.state())","every":25},
+ {"eval":"JSON.stringify(window.__test.state())"},
+ {"until":"['outro','end','fail'].includes(window.__test.MISSION.phase)","ms":150000,"label":"fight ends","log":"JSON.stringify(window.__test.state())","every":25},
+ {"until":"window.__test.MISSION.phase==='end'","ms":30000,"label":"outro ends"},
+ {"wait":2000},{"shot":"t10_end.png"},
+ {"eval":"JSON.stringify(window.__test.STATS)"},
+ {"key":"Enter"},{"wait":1500},
+ {"eval":"JSON.stringify(window.__test.state())"}
+]

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Hourglass City - Act I</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+  canvas#screen { display: block; position: fixed; left: 0; top: 0; width: 100vw; height: 100vh;
+                  image-rendering: crisp-edges; image-rendering: pixelated; background: #000; cursor: none;
+                  touch-action: none; outline: none; }
+</style>
+</head>
+<body>
+<canvas id="screen" tabindex="0"></canvas>
+<script>
+/*
+ * THE HOURGLASS CITY - ACT I: THE ORDINARY DEAD
+ * An isometric point-and-click noir adventure. New Meridian, Ravenshore, 1957.
+ * Vanilla JS + Canvas 2D. No external assets, fonts, libraries or network requests.
+ *
+ * ============================== PLAN ==============================
+ * RENDER  320x180 indexed framebuffer (Uint8 palette indices) + per-pixel depth (Float32),
+ *         hotspot id (Uint8) and light tag buffers. Converted once per frame through a
+ *         Uint32 palette into ImageData, blitted at the largest integer scale, centred.
+ *         Palette: the 53 Ravenshore colours + 7 (coat tan, warm wood, blue neon x2, the
+ *         pale green of the lights, two deeper skin tones) = 60. All falloff is 4x4 Bayer
+ *         dither; all lighting is palette remaps (LIT warm, SHD cool, tinted neon washes).
+ *
+ * ISO     World in metres. Screen: sx = (x - y) * 16, sy = (x + y) * 8 - z * 16 (32x16 tiles).
+ *         Rooms are rasterised once into cached room buffers: every surface is an
+ *         axis-aligned textured rectangle rasterised by inverse projection, so each pixel
+ *         knows its world position, normal and depth. A deferred bake then applies point
+ *         lights, window/venetian slat light and occlusion shadows as remaps.
+ *         Characters are billboards depth-tested at their foot point; their rows are lit by
+ *         the same light functions, so blind slats slide across Frank as he walks.
+ *         Puddles reflect whatever stands behind them (per-column mirror source, live).
+ *
+ * PLAY    Left click: walk / use / talk.  Right click: look.  Mouse to top edge or I:
+ *         inventory (click an item, then click a target to use it on).  N: notebook -
+ *         connect two clues to make a deduction.  WASD / arrows: walk.  E / Space: use
+ *         the highlighted thing.  Q: look at it.  Tab: next hotspot.  1-4: dialogue.
+ *         Esc: menu (save, load, sound, help).  Clicking Frank gives his read on things.
+ *
+ * STORY   Adapted from "The Hourglass City" story bible, chapters 1-3.
+ *         1 The Letter Under the Door  office, landing          06:50, rain
+ *         2 Room 714                   Ferrier St, Mirador lobby, 7th floor, room 714
+ *         3 The Blue Comet             the Nickel Mile, club floor, backstage, alley  21:00
+ *         Midnight: burn the letter or keep it.  Russo's fate depends on the parked sedan.
+ *         Fairness rules from the design docs: goals are stated, methods are not; every
+ *         clue reads as a clue; failure teaches; the game is never unwinnable; the
+ *         important locks have two keys.
+ *
+ * LOOP    Fixed 60 Hz update with an accumulator, rAF render. Script runner for
+ *         cutscenes and interactions (say / walk / face / wait / fade / choice / call).
+ *
+ * URL     ?room=ID starts in a room (debug), ?debug=1 draws walk grid and hotspots,
+ *         ?nosave=1 ignores the saved game, ?mute=1 starts silent.
+ * ===================================================================
+ */
