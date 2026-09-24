@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Hourglass City</title>
+<meta name="description" content="Noir pixel-art games that run in the browser: an isometric detective adventure, a real-time car chase and a cinematic loop. Every pixel drawn in code.">
+<meta property="og:title" content="The Hourglass City">
+<meta property="og:description" content="Noir pixel-art games in the browser. New Meridian, 1957. Every pixel drawn in code.">
+<meta property="og:image" content="https://odiriuss.github.io/PixelArtGameOpus/docs/level_chase.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8' shape-rendering='crispEdges'%3E%3Crect width='8' height='8' fill='%23121420'/%3E%3Crect x='2' y='1' width='4' height='1' fill='%23f2e3c6'/%3E%3Crect x='1' y='2' width='6' height='1' fill='%23f2e3c6'/%3E%3Crect x='3' y='3' width='2' height='3' fill='%23e8715f'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d0f18; --panel: #161a28; --line: #2a3046;
+    --cream: #f2e3c6; --text: #c9c2b3; --dim: #8a8577; --coral: #e8715f; --amber: #f0b45a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 48px 16px 40px; }
+  header { text-align: center; margin-bottom: 40px; }
+  h1 { margin: 0; color: var(--cream); font: 700 clamp(30px, 6vw, 56px)/1.05 ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+  .sub { margin: 10px 0 0; color: var(--coral); font: 600 14px/1.4 ui-monospace, Consolas, monospace; letter-spacing: 0.2em; text-transform: uppercase; }
+  .lede { max-width: 640px; margin: 20px auto 0; color: var(--text); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+  .card { display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .card img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; image-rendering: pixelated; border-bottom: 1px solid var(--line); }
+  .body { display: flex; flex-direction: column; flex: 1; padding: 18px 20px 20px; }
+  .card h2 { margin: 0 0 4px; color: var(--cream); font: 700 20px/1.25 ui-monospace, Consolas, monospace; letter-spacing: 0.04em; }
+  .kind { margin: 0 0 10px; color: var(--amber); font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .card p { margin: 0 0 12px; }
+  .keys { color: var(--dim); font-size: 14px; }
+  .play { align-self: flex-start; margin-top: auto; padding: 9px 22px; border: 1px solid var(--coral); border-radius: 4px; background: var(--coral); color: #1a0f0d; font: 700 15px/1 ui-monospace, Consolas, monospace; letter-spacing: 0.1em; text-decoration: none; text-transform: uppercase; }
+  .play:hover, .play:focus-visible { background: transparent; color: var(--coral); }
+  .note { margin: 28px 0 0; text-align: center; color: var(--dim); font-size: 14px; }
+  footer { margin-top: 36px; padding-top: 20px; border-top: 1px solid var(--line); text-align: center; color: var(--dim); font-size: 14px; }
+  footer a, .lede a { color: var(--cream); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>The Hourglass City</h1>
+    <p class="sub">New Meridian, 1957</p>
+    <p class="lede">Noir pixel-art games that run in your browser. Every building, car, person, raindrop and letter is drawn in code, and the sound effects and music are synthesized as you play. There are no libraries, no image files and no audio files: each game is a single HTML page.</p>
+  </header>
+
+  <main class="grid">
+    <article class="card">
+      <img src="docs/level_chase.png" width="960" height="540" alt="A cream coupe chasing a black sedan through a rainy isometric city at night">
+      <div class="body">
+        <h2>The Black Sedan</h2>
+        <p class="kind">Real-time chase and gunfight</p>
+        <p>A drive-by outside the Blue Comet. Take any car on the street, chase the sedan across the city, and finish it at Pier 9.</p>
+        <p class="keys">WASD drive or walk · mouse aim · click shoot · E get in or out · Space handbrake</p>
+        <a class="play" href="hourglass_testlevel.html">Play</a>
+      </div>
+    </article>
+
+    <article class="card">
+      <img src="docs/city_club.png" width="960" height="540" alt="Detective Frank Calder inside the Blue Comet jazz club, drawn in isometric pixel art">
+      <div class="body">
+        <h2>The Hourglass City</h2>
+        <p class="kind">Point-and-click detective adventure</p>
+        <p>Act I, <em>The Ordinary Dead</em>. Evelyn Hart, a singer at the Blue Comet, was found dead in room 714 of the Hotel Mirador. Detective Frank Calder follows her trail with clues and deductions in his notebook.</p>
+        <p class="keys">Click to walk, use and talk · right click to look · N notebook · Esc menu</p>
+        <a class="play" href="hourglass_city.html">Play</a>
+      </div>
+    </article>
+
+    <article class="card">
+      <img src="docs/garden.png" width="960" height="540" alt="A rooftop garden in front of a city skyline at dusk, in pixel art">
+      <div class="body">
+        <h2>Ravenshore Garden</h2>
+        <p class="kind">Cinematic loop</p>
+        <p>An evening in a garden above the Ravenshore skyline. A woman waters the flower beds with her companion robot, and an aircar arrives at the end of the loop.</p>
+        <p class="keys">Just watch</p>
+        <a class="play" href="ravenshore_garden.html">Watch</a>
+      </div>
+    </article>
+  </main>
+
+  <p class="note">Best on a desktop or laptop: the games need a keyboard and mouse.</p>
+
+  <footer>
+    <a href="https://github.com/Odiriuss/PixelArtGameOpus">Source on GitHub</a> · Written with Claude Code (Claude Opus 5.5)
+  </footer>
+</div>
+</body>
+</html>

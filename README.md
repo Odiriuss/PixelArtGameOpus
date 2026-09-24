@@ -12,7 +12,13 @@ Each game is a single self-contained HTML file. They use plain JavaScript and Ca
 
 ## Play
 
-Download a file and open it in a desktop browser (Chrome, Edge or Firefox). You don't need to install anything or run a server.
+**Play in your browser: https://odiriuss.github.io/PixelArtGameOpus/**
+
+- [The Black Sedan](https://odiriuss.github.io/PixelArtGameOpus/hourglass_testlevel.html) (the car chase)
+- [The Hourglass City](https://odiriuss.github.io/PixelArtGameOpus/hourglass_city.html) (the adventure)
+- [Ravenshore Garden](https://odiriuss.github.io/PixelArtGameOpus/ravenshore_garden.html)
+
+The games need a keyboard and mouse, so play them on a desktop or laptop. To play offline, download an HTML file and open it; you don't need to install anything or run a server.
 
 ## The Hourglass City
 
