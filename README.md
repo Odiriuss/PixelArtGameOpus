@@ -88,3 +88,7 @@ npm run test:level    # bot playthrough of the chase and fight, interactions, me
 ## Credits
 
 The story, characters and setting are adapted from the *Ravenshore Hourglass* concept pack. The games were written with [Claude Code](https://claude.com/claude-code) (Claude Opus 5.5).
+
+## License
+
+[MIT](LICENSE)

@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "The Hourglass City: an isometric noir adventure and a real-time car-chase test level, in plain JavaScript and Canvas 2D",
+  "license": "MIT",
   "scripts": {
     "build": "sh build.sh && sh build_test.sh && sh build_garden.sh",
     "test:city": "node tools/play.js routeA && node tools/play.js routeB && node tools/kb.js && node tools/run.js tests/city_exits.json && node tools/run.js tests/city_entry_probe.json",
