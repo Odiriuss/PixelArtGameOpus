@@ -91,4 +91,6 @@ The story, characters and setting are adapted from the *Ravenshore Hourglass* co
 
 ## License
 
-[MIT](LICENSE)
+**Code:** the source code is released under the [MIT License](LICENSE). That covers the engine, the game logic, the build scripts and the test tools.
+
+**Story and characters:** the story, characters (including their designs), setting, names, dialogue and other written text of *Ravenshore Hourglass* and *The Hourglass City* are © 2026 Odiriuss, all rights reserved. This includes New Meridian, Frank Calder, Evelyn Hart and the Blue Comet. They are **not** covered by the MIT License, including where they appear inside the source files. You're welcome to play the games and share links to them. To reuse the story, characters or setting in your own work, ask for permission first.
