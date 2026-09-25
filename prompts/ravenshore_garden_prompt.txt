@@ -1,0 +1,111 @@
+Create a single self-contained HTML file that renders a cinematic animated pixel art scene in a retro-futurist noir style: at dusk in Ravenshore, 1957, a woman tends the small terraced garden of her hillside cottage high above an art-deco harbor city. She walks between raised flower beds and waters her plants with a chrome watering can while a small domestic robot trundles after her. Use vanilla JavaScript and Canvas 2D. No external assets, libraries, fonts, or network requests. Save it as ravenshore_garden.html in the current working directory.
+
+SETTING AND MOOD
+
+- World: an alternate 1957, fifteen years after a war nobody won. The city survived on fusion power and stubbornness. Picture 1950s Americana rebuilt with atomic-age optimism: stepped art-deco towers and spires, finned sedans that fly on glowing turbine pods, boxy riveted helper robots, atom-emblem neon, and cooling towers breathing steam into the sunset. It is the future as 1957 imagined it, seen through film noir.
+
+- Noir: hard light, deep shadows, silhouettes, smoke and harbor haze, light through venetian blinds, searchlights sweeping low clouds, and wet stone that mirrors every lamp. Crush the palette and keep it desaturated. The only saturated colors are small bursts of amber lamplight, a rare cyan fusion glow, and the crimson of her dress.
+
+- The moment itself is tender and quiet, a private ritual at the end of the day above a city full of secrets. Nobody is in danger, so the noir lives in the light and not in the plot. Mood: melancholic, nostalgic, serene, warm light in a cool world.
+
+VISUAL REFERENCES
+
+- Concept art for this world is in the concept pack Ravenshore_Hourglass_Docs_and_Art_2026-09-17.zip, under Ravenshore_Hourglass_Collection_2026-09-17/03_CONCEPT_ART/ (small JPG previews are in 06_GALLERY/previews/). Extract it to a temp folder and look at these before planning:
+  - 02_Aircars/rainy_retro_futurist_aircar_departure.png: the aircar shape (black finned 1950s sedan body, round chrome turbine pods at each corner glowing warm underneath) and a dusk sky with a low molten sun between towers.
+  - 01_Cinematic_Environments/neo_noir_coastal_research_checkpoint.png: the sky grade (bruised violet cloud banks over a burnt-orange horizon), the fusion complex silhouette (domes, cooling towers, steam lit from below) and art-deco lamp posts.
+  - 01_Cinematic_Environments/new_meridian_twilight_apartment.png: tungsten interior warmth against a cool blue skyline, and the boxy tread-wheeled domestic robot.
+  - 01_Cinematic_Environments/rainy_noir_harbor_city_at_dusk.png: the noir street palette, wet reflections and silhouettes.
+  - 03_Isometric_Region_Batch_10/golden_hour_heights_waterfront_district.png and 04_Isometric_City_Batch_8/golden_dusk_overlook_district.png: terraced hillside gardens stepping down to the harbor.
+  - 05_Early_Visual_Explorations/volta_diner_humanity_endures.png: neon and atom-emblem signage.
+  - These are painterly illustrations. Borrow their shapes, lighting and color relationships and translate them into pixel art. Do not reproduce them literally or copy their text.
+
+RENDERING
+
+- Draw everything to an offscreen canvas at a fixed logical resolution of 320x180, with a cinematic 2.39:1 letterbox: solid near-black bars top and bottom (23 rows each), leaving a 320x134 image area. Blit to a fullscreen display canvas scaled by the largest integer factor that fits the window, centered on a black background, with imageSmoothingEnabled = false and CSS image-rendering: pixelated.
+
+- All drawing snaps to integer coordinates on the logical canvas. No sub-pixel positions, anti-aliasing, gradients, globalAlpha blending, filters, or shadowBlur. Any soft falloff (sky, light cones, fog, searchlights, vignette, glow) uses ordered 4x4 Bayer dithering between adjacent palette colors, never true gradients.
+
+- Recommended architecture: render into an indexed-color framebuffer (a Uint8Array of palette indices) and convert it to ImageData once per frame through a Uint32Array palette lookup. That guarantees palette-only output and makes lighting cheap. Lighting changes (a light slat passing over a sprite, lamp pools, the aircar glow, shadows) are palette-index remaps through precomputed light ramps (shadow -> base -> lit), never alpha blending.
+
+- Subtle noir film grain: each grain tick (at about 12 fps), a sparse, deterministic pseudo-random ~1% of pixels in the darkest ramps swap to their adjacent palette step. Keep it barely perceptible.
+
+PALETTE
+
+- Fixed palette of 53 colors. Every pixel comes from this palette. You may nudge individual values, but stay at or under 64 colors and keep the relationships: desaturated violet-charcoal shadows, a dusty mauve and burnt-amber sky, amber as the dominant warm accent, cyan as the rare cool accent, and crimson for her dress, one rose variety, and nothing else large. Teal-orange noir grade: warm light sources (sunset, windows, lamps) against cool ambient fill in every shadow, with blacks crushed so the darkest third of the image sits in the 4-5 darkest colors.
+  Letterbox, outline and foreground silhouettes: #07060a #141119
+  Sky, zenith to horizon: #1b1a2a #2c3246 #4b4659 #86615f #c2744c
+  Sun sliver and glows (also window light, lamp bulbs, city window lights, robot eye): #f2b86e #fff0cf
+  Cloud bodies: #3a3446 (undersides lit with #c2744c and #f2b86e)
+  Searchlight haze: #a7adb6
+  Bay water: #121822 #273041 (the reflection column reuses the sun colors)
+  Distant skyline, far and near: #25243a #36354b
+  Neon red and aviation beacons: #d9443a
+  Fusion glow and cyan neon: #5ad1d2 #2b7580
+  Foliage, shadow to lamp-lit: #121c1d #213632 #475838 #8d8b4c
+  Stone path, wet to lit: #2b2a33 #4b4955 #7b6e66
+  Soil, dry to wet: #7d6752 #4d392b #24180f
+  Steel (planters, robot, watering can), dark to chrome: #333a46 #626c79 #9ca7b1 #d6dfe3
+  Flowers: crimson rose #a3303b, coral #d8605c, marigold #e0973a, pale yellow #eed27c (also fireflies), lavender #8b7cb4, cream #efe6cf
+  Cottage: lamp-lit stucco #d8c6a2, cool stucco shadow #6f7b82, dark trim #2a2532
+  Skin, light / mid / shadow: #f1c7a0 #c08a69 #744b47
+  Hair, dark / lit: #3b2220 #70402c
+  Headscarf, apron and gloves: cream #efe6cf (shared) with cool shadow #8a8c99
+  Dress: crimson #a3303b (shared), oxblood #5c1a2b, plum shadow #321526
+  Water: #ffffff #a8e6ee #4a8db0
+  Rim light: #ffc46b
+
+CAMERA
+
+- The world is wider and a little taller than the frame (~480x150 logical px). A virtual camera with integer x and y offsets drifts slowly and eases between shots. Parallax layers scroll at different rates: sky 0.05, far skyline and bay 0.15, fusion headland and bridge 0.25, near hillside and cypress line 0.5, garden 1.0, foreground 1.4. Apply the same factors to the small vertical offset.
+
+- Shot sequence tied to the state machine. Open on a WIDE establishing shot framed slightly high: a slow dolly across the bay and the city lights, with searchlights crossing the low clouds and distant aircar traffic. The camera then eases down and across to reveal the cottage and the terraced garden. It follows her as she walks, leaving lead room in the direction of travel. During POUR it pushes in by panning to frame her and the bed on the rule of thirds, with the skyline over her shoulder. During the final SETTLE it holds a wider framing of her silhouette against the city while the hero aircar passes. At the loop point it eases back to the establishing framing. Camera motion always eases in and out, never cuts, and is quantized to whole pixels.
+
+CHARACTER
+
+- Build the woman procedurally from filled rects and pixel runs, ~16x28 logical pixels, in a 1950s silhouette: a cream silk headscarf knotted at the nape with two short tails that flutter, dark auburn curls at the forehead with a few loose strands catching the breeze, and a crimson tea-length swing dress with a fitted bodice, belted waist and a full skirt that flares and sways at the hem. Add a short cream half-apron, cream gardening gloves, bare forearms and low dark pumps. In her right hand she carries a streamlined chrome watering can: a rounded teardrop tank like a 1950s toaster, a curved handle, and a long tapered spout with a rose head. Side-view profile, flipped horizontally to face the direction of travel.
+
+- Backlit by the sunset across the bay: a 1-pixel hot amber rim light (#ffc46b) traces the edge of her silhouette facing the sun's on-screen position (scarf, shoulder, arm, skirt edge, can), recomputed when she turns. The rest of her body sits in cooler shadow tones. The can's chrome carries one warm specular pixel from the sunset and one cool pixel from the sky. When she walks through the venetian-blind light from the cottage window, the amber slats slide across her dress and body through palette remapping.
+
+- Parameterize the pose (x position, facing direction, walk cycle phase, body bob, arm raise angle, can tilt angle, head tilt, hem sway, scarf-tail sway, hair strand sway). Animate the parameters smoothly, then quantize them to the pixel grid and step pose updates at about 10 fps, so motion has an 8-12 fps pixel-animation feel even though the loop runs at 60 fps.
+
+COMPANION ROBOT
+
+- A small domestic helper robot, ~10x13 logical pixels: a boxy riveted gunmetal body on a pair of rubber treads, a domed head with a single round amber lens eye, a thin whip antenna with a tiny blinking tip, and two pincer arms cradling a tray of seedlings. Draw it from the steel ramp with lower contrast than her so she stays the focal point.
+
+- It trundles after her a few pixels behind and stops when she stops. Its eye turns toward whatever she is looking at: it tilts toward the bed while she pours and tracks the aircar across the sky during the final SETTLE. It does a 1-pixel happy bounce when the last bed is watered. Its simple follower state trails hers.
+
+ANIMATION
+
+- Looping state machine: WALK (she strolls along the stone path to the next flower bed, can swinging gently, skirt and scarf tails bobbing, hair drifting, robot following) -> LIFT (she stops, turns toward the bed, raises the can) -> POUR (she tilts the can and water arcs from the spout onto the plants, sweeping slowly across the bed, head tilted down) -> SETTLE (she lowers the can, pauses, lifts her head to gaze out over the city for a held beat, then turns toward the next bed). Visit 3 beds, then walk back to the cottage step so the loop is seamless, with the camera returning to the establishing shot at the loop point. On the last SETTLE, the hero aircar glides past during her held gaze. Ease pose parameters between keyframes.
+
+- Fixed loop length (around 50-60 s). Every ambient cycle (searchlight sweeps, aircar paths, cloud drift, window lights, neon flicker pattern, fusion pulse, beacon blinks, steam, fog) is driven by loop phase or uses a period that divides the loop length evenly, so the last frame flows into the first with no pop.
+
+- Pooled, allocation-free particle system: preallocate and reuse ~300 particles. During POUR, emit a stream of water droplets from the spout tip with slight spread and gravity. On landing each droplet spawns 2-3 tiny splash particles. Droplets that pass in front of the sun sliver or a lamp flash to white for one frame (backlit sparkle). During WALK, occasionally drip a single drop from the spout. Each water particle steps its palette index from white to light cyan to mid blue before despawning. Ambient: moths looping erratically around the porch lamp and garden lamps, a few fireflies blinking in the tall grass, and slow steam wisps near the fusion towers. Snap particle positions to the grid when drawing.
+
+- Watered soil darkens from dry to wet, then dries back over the loop. Watered flowers give a small 1-pixel perk-up bounce. Flagstones hit by splashes turn wet-dark and show a 1-2 pixel amber reflection glint that fades as they dry.
+
+- Fixed 60 Hz timestep update with an accumulator and rAF rendering. Zero object allocation inside the loop: no per-frame closures, arrays or objects.
+
+SCENE
+
+- Layered for depth, back to front:
+  1. Sky: dithered dusk sky from indigo at the zenith through slate-teal and dusk violet to smoky rose and a burnt-amber horizon, with 3-6 faint first stars twinkling near the top. The last molten sliver of sun sinks into the bay between two towers. 2-3 long, low cloud banks with dark violet bodies are lit amber from below and drift slowly. 2-3 searchlight beams from the city sweep slowly across the cloud base as dithered cold haze bands.
+  2. Far distance: the harbor city across the bay, an art-deco skyline silhouette of stepped towers, spires and a mooring-mast tower. Lit windows are scattered amber pixels that occasionally switch on or off, and red aviation beacons blink. A suspension bridge carries a string of lamp pixels. On a headland sits the fusion complex: a large dome, two cooling towers releasing slow steam plumes lit amber from below, and a soft dithered cyan core glow that pulses slowly. 2-3 lanes of tiny aircar traffic (paired light pixels) drift between the towers.
+  3. Bay: dark water with a dithered amber reflection column under the sun that shimmers (the dither offset shifts every few frames), a few ship lights, and a thin bank of harbor fog drifting slowly across the water.
+  4. Near hillside: cypress and pine silhouettes in cool teal-green, swaying 1 pixel on a slow breeze cycle, with a step of haze between layers for atmospheric perspective. Farther down the hill, a roadside diner's neon sign (an atom emblem in cyan with a red ring, no text) buzzes with an occasional flicker-stutter.
+  5. Garden (mid-ground): the corner of a streamline-moderne cottage with a rounded corner, cream stucco, horizontal chrome speed-lines, a porthole window, and a larger window whose venetian blinds glow warm amber from within. It has a porch step with a glass globe lamp and a rooftop TV antenna with a tiny blinking red light. A low stone wall with an iron railing edges the terrace. Along a sloping flagstone path sit 3 raised beds in riveted steel planter boxes, each with different flowers (crimson roses, marigolds, lavender, cream daisies), plus glass bell cloches over seedlings, a copper standpipe with a brass pressure gauge and valve wheel, and two pole-mounted garden lamps with warm bulbs.
+  6. Hero aircar: once per loop, during the final SETTLE, a black finned 1950s aircar with four round chrome turbine pods glowing warm underneath and red tail lights glides across the mid-ground sky, slowly descending toward the city. Its headlight beam is a dithered cone, and its underglow briefly lifts the garden's highlights by palette remap as it passes.
+  7. Foreground: out-of-focus framing elements in near-black with simplified shapes that read as shallow depth of field. Tall grass and a wrought-iron gate finial sit at the bottom edge, a leafy branch hangs into one top corner, and a telephone pole crossbar with glass insulators and sagging wires crosses the top of the frame. They pass slowly across the frame with the camera.
+
+- Lighting:
+  - Venetian-blind light: the cottage window throws 4-5 hard amber slats across the path and planters, with 1-pixel dithered edges. This is the signature noir shot.
+  - Light pools: the porch lamp and garden lamps each cast a dithered warm pool on the ground, with a faint dithered halo and an occasional subtle flicker.
+  - Long cool shadows stretch toward the camera, away from the sunset, from the wall, planters, robot and character. Draw them as darkening palette remaps, not flat black.
+  - A subtle dithered vignette darkens the corners of the image area.
+  - Keep background contrast low and desaturated. She is the brightest-edged, highest-contrast element, and her crimson dress is the only large saturated mass in the frame, so her silhouette reads clearly.
+
+QUALITY BAR
+
+- Crisp pixels at any window size, a seamless loop, stable 60 fps, and a readable silhouette. It should look like a polished late 16-bit / VGA-era cinematic cutscene from a narrative noir adventure game (think Flashback, Beneath a Steel Sky, Snatcher): the quiet establishing moment before the story begins, not vector shapes scaled down. Mood: tender, quiet, nostalgic and a little melancholic, warm light in a cool world.
+
+Plan it out first (layer list, palette table and light ramps, state machine timeline with durations, camera keyframes, particle budget), then build the scene and review the result against this spec before calling it done.

@@ -89,6 +89,8 @@ npm run test:level    # bot playthrough of the chase and fight, interactions, me
 
 The story, characters and setting are adapted from the *Ravenshore Hourglass* concept pack. The games were written with [Claude Code](https://claude.com/claude-code) (Claude Opus 5.5).
 
+It started from one prompt, for Ravenshore Garden: [`prompts/ravenshore_garden_prompt.txt`](prompts/ravenshore_garden_prompt.txt). The detective adventure and the test level grew out of short follow-up requests.
+
 ## License
 
 **Code:** the source code is released under the [MIT License](LICENSE). That covers the engine, the game logic, the build scripts and the test tools.
