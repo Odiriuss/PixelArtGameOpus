@@ -49,7 +49,7 @@ function vehicleTick(V) {
   }
 }
 // ------------------------------------------------------------------ the streetcar: back and forth along the rails of the first avenue
-const TRAM = { y0: 18, y1: 70, speed: 7 };
+const TRAM = { y0: 18, y1: 70, speed: 7, x: AV[1] };
 function tramTick(V) {
   const s = V.tram;
   if (s.wait > 0) { s.wait--; V.vx = V.vy = 0; if (s.wait === 0) { s.dir = -s.dir; V.a = s.dir > 0 ? Math.PI / 2 : Math.PI * 1.5; sfxAt('bell', V.x, V.y); } return; }
@@ -61,11 +61,11 @@ function tramTick(V) {
   const end = s.dir > 0 ? TRAM.y1 : TRAM.y0, left = (end - V.y) * s.dir;
   if (left < 0.1) { s.wait = 240; s.v = 0; V.vy = 0; return; }
   const v = Math.min(s.v, Math.sqrt(2 * 1.2 * Math.max(0, left)) + 0.3);
-  V.vx = 0; V.vy = v * s.dir; V.x = AV[1];
+  V.vx = 0; V.vy = v * s.dir; V.x = TRAM.x;
   V.braking = v < s.v - 0.1 || s.blocked > 0;
 }
 function spawnTram(y, dir) {
-  const V = makeVehicle('tram', AV[1], y, dir > 0 ? Math.PI / 2 : Math.PI * 1.5, 'green', 'cream');
+  const V = makeVehicle('tram', TRAM.x, y, dir > 0 ? Math.PI / 2 : Math.PI * 1.5, 'green', 'cream');
   V.tram = { dir, v: TRAM.speed, wait: 0, blocked: 0 }; V.name = 'STREETCAR';
   return V;
 }

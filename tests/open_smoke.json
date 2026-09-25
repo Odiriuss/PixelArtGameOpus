@@ -1,0 +1,8 @@
+[
+  { "page": "hourglass_opencity.html", "url": "?mute=1&fresh=1", "wait": 1500 },
+  { "label": "build", "eval": "({ build: __test.GAME.buildMs, mode: __test.GAME.mode, tiles: __test.TILES.size })" },
+  { "shot": "open_title.png" },
+  { "eval": "__test.begin(); __test.step(60); __test.state()", "label": "begin" },
+  { "wait": 1500, "shot": "open_office.png" },
+  { "label": "state", "eval": "__test.state()" }
+]

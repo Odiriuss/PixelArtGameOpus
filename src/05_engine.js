@@ -1,8 +1,8 @@
 
 // =================================================================== ROOMS
 const ROOMS = {};                  // id -> room definition (content files register here)
-const mb = new Uint8Array(W * H);  // screen material buffer (copied from the room buffer)
-const rsrc = new Int32Array(W * H);// screen reflection source (-1 none)
+const mb = new Uint8Array(SCR_N);  // screen material buffer (copied from the room buffer)
+const rsrc = new Int32Array(SCR_N);// screen reflection source (-1 none)
 let room = null;                   // current room definition
 function defRoom(def) { ROOMS[def.id] = def; return def; }
 // hotspot numeric id inside the current build/room (index + 1)

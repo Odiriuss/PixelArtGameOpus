@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New Meridian - Open City</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+  canvas#screen { display: block; position: fixed; left: 0; top: 0; width: 100vw; height: 100vh;
+                  image-rendering: crisp-edges; image-rendering: pixelated; background: #000; cursor: none;
+                  touch-action: none; outline: none; }
+</style>
+</head>
+<body>
+<canvas id="screen" tabindex="0"></canvas>
+<script>
+// the widest world view (zoomed out, twice the HUD each way, and a little over): the engine sizes its screen buffers
+// by it. A script of its own, so that 'use strict' stays the first thing in the game's.
+const WMAX_W = 648, WMAX_H = 368, SCREEN_PIXELS = WMAX_W * WMAX_H;
+</script>
+<script>
+/*
+ * THE HOURGLASS CITY - OPEN CITY
+ * A slice of New Meridian, 1957, to walk, drive, break into and shoot your way around. Vanilla JS + Canvas 2D.
+ * No external assets, fonts, libraries or network requests.
+ *
+ * ============================== PLAN ==============================
+ * CITY     Twelve blocks of Downtown, the Nickel Mile and the South Docks. Surfaces are recorded into display
+ *          lists (UNDER: ground and the bottom of every building; OVER: the rest) and baked lazily into 64 px
+ *          screen tiles, least recently used thrown away. A tile keeps the light that reaches each pixel, not
+ *          its final colour, so the same bake serves noon and midnight: the sun (with building shadows), the
+ *          sky, every lamp by id (a lamp can be shot out), neon washes and flicker.
+ * INSIDE   Most buildings can be entered. The roof lifts off the one Frank is in; its interior (floors, cut-away
+ *          partitions, furniture, lamps) is a display list of its own, baked into tiles of its own. Key
+ *          buildings have upper floors, reached by stairs, drawn in place at their height.
+ * TIME     One game hour per real minute. Lamps and windows come on at dusk; shops keep their hours.
+ * PEOPLE   Pedestrians, shopkeepers, police on the beat, the mob at the docks, Crown Energy's guards.
+ *          Guards see with cones (flashlights at night), hear footsteps and shots, and climb a ladder of
+ *          suspicion: unaware, suspicious, searching, alerted.
+ * GEAR     A paper doll (hat, coat, suit, shoes, gloves, belt, sidearm, long gun, close work, thrown), an 8x6
+ *          grid bag, the Buick's trunk, money and a bank account; shops that sell by the box and a few that buy.
+ *          Every modifier (armour, stealth, noise, charm, picks...) goes through playerStats(); character
+ *          attributes, when they come, are one more source for it (ATTRS).
+ * LAW      Heat 0-5. Witnesses report what they saw; cops see it themselves. Patrol cars come by the road grid.
+ * WORK     Jobs from the office phone and the payphones. The game saves when he sleeps, when a job pays, and by S
+ *          on the pause screen.
+ *
+ * ZOOM     The world is drawn at a pixel size of its own under the HUD: + and - zoom in and out, and the camera
+ *          pulls out by itself at the wheel.
+ *
+ * PLAY     WASD walk or drive, mouse aim, click shoot, E use, R reload, 1-5 weapons, G throw, C crouch,
+ *          Shift run, L flashlight, Tab case the joint, I inventory, M map, J jobs, + - zoom, Esc pause.
+ * URL      ?mute=1, ?hour=H start time, ?debug=1, ?god=1, ?turbo=N, ?prof=1 timings, ?auto=1 or ?start=1 skip
+ *          the title, ?fresh=1 ignore the save, ?keep=1 keep the save on a new game.
+ * ===================================================================
+ */

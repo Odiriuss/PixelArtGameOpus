@@ -36,6 +36,7 @@ function sfxAt(name, x, y, amt) {
     case 'bell': for (const u of [0, 0.32, 0.95]) { tone(1318, t + u, 1.1, 'sine', 0.14, d); tone(2637, t + u, 0.5, 'sine', 0.05, d); } break;
     case 'click': noiseBurst(t, 0.02, 0.25, 'highpass', 3000, 1, d); tone(900, t, 0.03, 'square', 0.05, d); break;
     case 'splash': noiseBurst(t, 0.8, 0.6, 'lowpass', 1200, 0.6, d); noiseBurst(t + 0.1, 1.2, 0.3, 'bandpass', 600, 0.5, d); break;
+    default: if (typeof sfxExtra === 'function') sfxExtra(name, t, d);            // a level's own sounds
   }
 }
 // ------------------------------------------------------------------ engines and tyres: continuous voices
@@ -85,7 +86,7 @@ function musicTick() {
   const ctx = AUD.ctx; if (!ctx) return;
   if (!MUS.bus) { MUS.bus = ctx.createGain(); MUS.bus.gain.value = 0.5; MUS.bus.connect(AUD.master); }
   if (MUS.mode === 'none' || AUD.muted) { MUS.next = ctx.currentTime + 0.1; return; }
-  const chase = MUS.mode === 'chase', step = chase ? 60 / 152 / 2 : 60 / 112 / 2;
+  const chase = MUS.mode === 'chase', tense = MUS.mode === 'tension', step = chase ? 60 / 152 / 2 : tense ? 60 / 76 / 2 : 60 / 112 / 2;
   while (MUS.next < ctx.currentTime + 0.15) {
     const t = MUS.next, s = MUS.step % 16, bar = Math.floor(MUS.step / 16) % 4, b = MUS.bus;
     if (chase) {
@@ -96,6 +97,11 @@ function musicTick() {
       noiseBurst(t, 0.03, 0.05, 'highpass', 6000, 0.7, b);
       if (s === 0 && (bar & 1) === 0) for (const k of [0, 3, 7]) tone(mtof(64 + k + (bar === 2 ? 5 : 0)), t, 0.22, 'square', 0.035, b);
       if (s === 14 && bar === 3) for (const k of [0, 4, 7]) tone(mtof(66 + k), t, 0.3, 'square', 0.035, b);
+    } else if (tense) {                                    // someone is looking for him: a heartbeat and a held high note
+      if (s % 8 === 0) tone(52, t, 0.16, 'sine', 0.3, b);
+      if (s % 8 === 1) tone(46, t, 0.14, 'sine', 0.18, b);
+      if (s === 0) tone(mtof(33 + (bar & 1)), t, step * 15, 'triangle', 0.05, b);
+      if (s === 8 && bar !== 1) tone(mtof(76 + (bar === 3 ? 1 : 0)), t, step * 6, 'sine', 0.018, b);
     } else {
       if (s % 4 === 0) tone(mtof(28 + (bar === 3 ? 1 : 0)), t, step * 3.5, 'sawtooth', 0.07, b);
       if (s === 0 || s === 6 || s === 10) tone(70, t, 0.2, 'sine', 0.3, b);

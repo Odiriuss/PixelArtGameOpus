@@ -1,7 +1,8 @@
 'use strict';
 
 // ------------------------------------------------------------------ constants
-const W = 320, H = 180;
+let W = 320, H = 180;                  // the buffer being drawn into (the open city switches between its world and its HUD)
+let VW = W, VH = H;                    // what the camera shows of the world (the open city zooms it)
 const FPS = 60, DT = 1 / FPS;
 const TAU = Math.PI * 2;
 const T = 255;                         // transparent index in sprite buffers
@@ -122,10 +123,13 @@ function rnd() {
 }
 
 // ------------------------------------------------------------------ framebuffer
-const fb = new Uint8Array(W * H);      // palette indices
-const zb = new Float32Array(W * H);    // depth (x + y of the visible surface; larger = nearer)
-const hb = new Uint8Array(W * H);      // hotspot id under each pixel (0 = none)
-const sm = new Uint8Array(W * H);      // 1 where a sprite was drawn this frame (skips reflections)
+// sized for the widest world view a page asks for (SCREEN_PIXELS, set before this file), else for the screen
+const SCR_N = typeof SCREEN_PIXELS === 'number' ? SCREEN_PIXELS : W * H;
+let fb = new Uint8Array(SCR_N);        // palette indices
+const zb = new Float32Array(SCR_N);    // depth (x + y of the visible surface; larger = nearer)
+const hb = new Uint8Array(SCR_N);      // hotspot id under each pixel (0 = none)
+const sm = new Uint8Array(SCR_N);      // 1 where a sprite was drawn this frame (skips reflections)
+let REMAP_DOWN = null;                 // set while a HUD is drawn over a world layer of its own: its remaps darken the world too
 
 function pset(x, y, c) { if (x >= 0 && y >= 0 && x < W && y < H) fb[y * W + x] = c; }
 function fillRect(x, y, w, h, c) {
@@ -133,11 +137,13 @@ function fillRect(x, y, w, h, c) {
   for (let yy = y0; yy < y1; yy++) fb.fill(c, yy * W + x0, yy * W + x1);
 }
 function remapRect(x, y, w, h, map) {
+  if (REMAP_DOWN) REMAP_DOWN(x, y, w, h, map, 1);
   const x0 = Math.max(0, x), x1 = Math.min(W, x + w), y0 = Math.max(0, y), y1 = Math.min(H, y + h);
   for (let yy = y0; yy < y1; yy++) for (let i = yy * W + x0, e = yy * W + x1; i < e; i++) fb[i] = map[fb[i]];
 }
 // dithered remap: applies map where bayer < k (k in 0..1)
 function ditherRect(x, y, w, h, map, k) {
+  if (REMAP_DOWN) REMAP_DOWN(x, y, w, h, map, k);
   const x0 = Math.max(0, x), x1 = Math.min(W, x + w), y0 = Math.max(0, y), y1 = Math.min(H, y + h);
   for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) if (bay(xx, yy) < k) fb[yy * W + xx] = map[fb[yy * W + xx]];
 }

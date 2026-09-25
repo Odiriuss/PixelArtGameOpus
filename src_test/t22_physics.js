@@ -157,7 +157,7 @@ const KERB_JUMP = 6.5;                                     // m/s straight at th
 function collideVehicle(V) {
   const r = V.M.hl + 0.4; let onKerb = false;
   for (const S of staticsNear(V.x - r, V.y - r, V.x + r, V.y + r)) {
-    if (S.h < 0.3) continue;
+    if (S.h < 0.3 || S.z0 > V.z + 1.2) continue;                  // z0: the base of a static on an upper floor
     if (S.circle ? !obbVsCircle(V, S.cx, S.cy, S.r) : !obbVsBox(V, S)) continue;
     if (S.kind === 'quay') {                               // once a car is going over, the kerb lets it go
       onKerb = true;

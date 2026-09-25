@@ -21,17 +21,19 @@ function makeRB(x0, y0, x1, y1) {
   return rb;
 }
 // current write target and state shared by primitives (set per call to keep signatures small)
-let RB = null, curHot = 0, curMat = 0, curBias = 0;
+let RB = null, curHot = 0, curMat = 0, curBias = 0, curExt = 0;   // curExt: a shader may set it for the pixel it returns
 function setHot(h) { curHot = h | 0; }
 function setMat(m) { curMat = m | 0; }
 function setBias(b) { curBias = b; }
 function plot(bx, by, c, d, nrm, x, y, z) {
+  const e = curExt; curExt = 0;
   if (bx < 0 || by < 0 || bx >= RB.w || by >= RB.h || c === T) return;
   const i = by * RB.w + bx;
   d += curBias;
   if (d < RB.dep[i]) return;
   RB.col[i] = c; RB.dep[i] = d; RB.nrm[i] = nrm; RB.hot[i] = curHot; RB.mat[i] = curMat;
   RB.wx[i] = x; RB.wy[i] = y; RB.wz[i] = z;
+  if (RB.ext) RB.ext[i] = e;
 }
 function bboxOf(pts) {
   let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;

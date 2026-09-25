@@ -3,7 +3,8 @@ const PARTS = [], TRACERS = [];
 const SKID = { x: new Float32Array(2400), y: new Float32Array(2400), n: 0, i: 0 };
 const SHAKE = { v: 0, x: 0, y: 0 };
 function shake(v) { SHAKE.v = Math.max(SHAKE.v, v); }
-function part(kind, x, y, z, vx, vy, vz, life, c) { if (PARTS.length < 900) PARTS.push({ kind, x, y, z, vx, vy, vz, life, max: life, c }); }
+let PART_GZ;                                            // the floor under particles being spawned (undefined: the ground)
+function part(kind, x, y, z, vx, vy, vz, life, c) { if (PARTS.length < 900) PARTS.push({ kind, x, y, z, vx, vy, vz, life, max: life, c, gz: PART_GZ }); }
 function fxTracer(x0, y0, z0, x1, y1, z1, mine) { TRACERS.push({ x0, y0, z0, x1, y1, z1, life: 3, c: mine ? C.PALEY : C.GLOW }); }
 function fxMuzzle(x, y, z, ang) {
   DYNQ.push({ x, y, z, r: 5, k: 2.4, life: 2 });
@@ -37,7 +38,7 @@ function fxTick() {
     else if (p.kind === 'fire') { p.vx *= 0.9; p.vy *= 0.9; p.vz = p.vz * 0.93 + 0.08; }
     else if (p.kind !== 'flash') {
       p.vz -= 9.8 * DT;
-      const gz = groundZ(p.x, p.y);
+      const gz = p.gz !== undefined ? p.gz : groundZ(p.x, p.y);
       if (p.z < gz) { p.z = gz; p.vz *= -0.3; p.vx *= 0.6; p.vy *= 0.6; if (p.kind === 'drop') p.life = Math.min(p.life, 3); }
     }
   }
@@ -72,7 +73,7 @@ function gatherLights() {
   for (const V of cars) {
     const c = Math.cos(V.a), s = Math.sin(V.a);
     if (V.fire) DYN.push({ x: V.x + c * (V.M.hl - 0.6), y: V.y + s * (V.M.hl - 0.6), z: 1.6, r: 7 + rnd() * 0.8, k: 1.6 + rnd() * 0.5 });
-    if (V.lightsOn && !V.headOut && heads < 5) {
+    if (V.lightsOn && !V.headOut && heads < 5 * VW / 320) {           // a wider view (the open city zoomed out) lights more of them
       heads++;
       const hl = V.kin ? V.M.hl : V.M.hl - 0.1;
       DYN.push({ x: V.x + c * hl, y: V.y + s * hl, z: 0.75, r: V.kin ? 11 : 15, k: 3.2, cone: true, dx: c, dy: s, ang: 0.42, cos: Math.cos(0.42) });

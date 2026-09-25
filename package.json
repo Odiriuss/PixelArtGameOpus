@@ -2,13 +2,14 @@
   "name": "pixel-art-game-opus",
   "version": "1.0.0",
   "private": true,
-  "description": "The Hourglass City: an isometric noir adventure and a real-time car-chase test level, in plain JavaScript and Canvas 2D",
+  "description": "The Hourglass City: an isometric noir adventure, a real-time car-chase test level and an open-city sandbox, in plain JavaScript and Canvas 2D",
   "license": "MIT",
   "scripts": {
-    "build": "sh build.sh && sh build_test.sh && sh build_garden.sh",
+    "build": "sh build.sh && sh build_test.sh && sh build_garden.sh && sh build_open.sh",
     "test:city": "node tools/play.js routeA && node tools/play.js routeB && node tools/kb.js && node tools/run.js tests/city_exits.json && node tools/run.js tests/city_entry_probe.json",
     "test:level": "node tools/tl.js tests/level_playthrough.json && node tools/tl.js tests/level_interactions.json && node tools/tl.js tests/level_menus_tram.json",
-    "test": "npm run test:city && npm run test:level"
+    "test:open": "node tools/tl.js tests/open_smoke.json && node tools/open_test.js",
+    "test": "npm run test:city && npm run test:level && npm run test:open"
   },
   "devDependencies": {
     "puppeteer-core": "^23.11.1"

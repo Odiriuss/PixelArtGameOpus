@@ -111,7 +111,7 @@ function aiSideClear(V, side) {
   const c = Math.cos(V.a), s = Math.sin(V.a), gx = V.x - s * side * 3 + c * 5, gy = V.y + c * side * 3 + s * 5;
   const ghost = { x: gx, y: gy, a: V.a, M: { hl: V.M.hl + 1.5, hw: V.M.hw + 0.2 } };
   for (const O of VEH) if (O !== V && !O.gone && Math.abs(O.x - gx) < 12 && Math.abs(O.y - gy) < 12 && obbVsObb(ghost, O)) return false;
-  if (Math.abs(gx - AV[1]) < 2.6 && VEH.some(O => O.kin && !O.gone && Math.abs(O.y - gy) < 24)) return false;   // not onto the rails with the streetcar near
+  if (Math.abs(gx - TRAM.x) < 2.6 && VEH.some(O => O.kin && !O.gone && Math.abs(O.y - gy) < 24)) return false;   // not onto the rails with the streetcar near
   const r = ghost.M.hl + 1;
   for (const S of staticsNear(gx - r, gy - r, gx + r, gy + r)) {
     if (S.h < 0.3) continue;
@@ -120,7 +120,7 @@ function aiSideClear(V, side) {
   return surfAt(gx, gy) !== 2;
 }
 // a driver who has backed up three times without getting anywhere, while nobody is looking, is put back on the road
-function offScreen(x, y) { const sx = isoX(x, y) - cam.x, sy = isoY(x, y, 0) - cam.y; return sx < -50 || sy < -50 || sx > W + 50 || sy > H + 70; }
+function offScreen(x, y) { const sx = isoX(x, y) - cam.x, sy = isoY(x, y, 0) - cam.y; return sx < -50 || sy < -50 || sx > VW + 50 || sy > VH + 70; }
 function aiRescue(V) {
   const ai = V.ai, P = ai.path;
   for (let k = ai.i + 1; k < P.length - 1; k++) {
